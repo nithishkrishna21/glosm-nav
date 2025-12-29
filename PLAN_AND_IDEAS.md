@@ -1249,6 +1249,201 @@ grid_y = int(np.round(
 | **Transformation** | Simplified (squash + angle-based) | Full 4x4 transformation matrix |
 | **Why approach works** | Uniform score broadcast | Object-specific scores at specific locations |
 
+---
+
+### Summary: Coordinate Transformations - VLFM vs Our Approach
+
+**VLFM's Coordinate Pipeline (Simplified):**
+```
+Depth Image (480×640)
+  ↓ [Squash to max per column]
+Depth Boundary (640,) - 1D array
+  ↓ [Convert using angles: x = depth, y = depth * tan(θ)]
+2D Camera-Frame Coordinates (x, y) in meters
+  ↓ [Convert to pixels: multiply by pixels_per_meter]
+Local Cone Pixels (relative to cone center)
+  ↓ [Rotate entire cone image to camera yaw]
+Rotated Cone Image
+  ↓ [Extract camera position from pose matrix]
+Camera Grid Position (px, py)
+  ↓ [Overlay rotated cone at camera position]
+Global Value Map (1000×1000) - filled with uniform score
+```
+
+**VLFM's World → Grid Conversion (Camera Position):**
+```python
+# From value_map.py:_localize_new_data() (lines 309-313)
+cam_x, cam_y = tf_camera_to_episodic[:2, 3] / tf_camera_to_episodic[3, 3]
+px = int(cam_x * self.pixels_per_meter) + self._episode_pixel_origin[0]
+py = int(-cam_y * self.pixels_per_meter) + self._episode_pixel_origin[1]
+```
+
+**VLFM's General World → Grid Conversion Function:**
+```python
+# From base_map.py:_xy_to_px() (lines 35-46)
+def _xy_to_px(self, points: np.ndarray) -> np.ndarray:
+    """
+    Convert (x, y) world coordinates to (row, col) grid coordinates.
+
+    Args: points (N, 2) - world coordinates in meters
+    Returns: (N, 2) - grid pixel coordinates
+    """
+    # Step 1: Swap x/y order (world to grid axis swap)
+    px = np.rint(points[:, ::-1] * self.pixels_per_meter) + self._episode_pixel_origin
+
+    # Step 2: Flip row coordinate (Y-axis flip)
+    px[:, 0] = self._map.shape[0] - px[:, 0]
+
+    return px.astype(int)
+
+# Breakdown:
+# Input:  (x, y) world coordinates
+# Step 1: Reverse to (y, x), scale to pixels, add origin
+# Step 2: Flip row = map.shape[0] - row
+# Output: (row, col) grid coordinates
+```
+
+**Coordinate System Differences:**
+```
+World Frame (meters):              Grid Frame (pixels):
+    Y ↑                                row 0 ┌─────→ col
+      |                                      │
+──────┼──────→ X                             │
+      |                                      ↓
+   (0,0)                                  row 999
+
+X: Forward/backward              Row ≈ -Y (flipped)
+Y: Left/right                    Col ≈ +X
+Origin: (0, 0)                   Origin: (500, 500) center
+```
+
+---
+
+**Our Approach's Coordinate Pipeline (Full 3D):**
+```
+2D Mask + Depth Image
+  ↓ [ConceptGraphs: create_object_pcd() - unproject using camera intrinsics]
+3D Point Cloud in Camera Frame (x_cam, y_cam, z_cam)
+  ↓ [Transform using 4×4 camera_pose matrix]
+3D Point Cloud in World Frame (x_world, y_world, z_world)
+  ↓ [Convert using VLFM's _xy_to_px() function]
+2D Grid Coordinates (row, col)
+  ↓ [Look up confidence, apply per-object score]
+Value Map Updated (1000×1000) - different scores per object
+```
+
+**What We Reuse from VLFM:**
+
+| Component | VLFM Function | How We Use It |
+|-----------|---------------|---------------|
+| **World → Grid conversion** | `value_map._xy_to_px(points)` | Pass our 3D point cloud's (x, y) coordinates |
+| **Confidence mask** | `value_map._localize_new_data()` | Call once per timestep, look up values |
+| **Temporal fusion** | Formulas from `_fuse_new_data()` | Copy the fusion logic |
+
+**Implementation Example:**
+```python
+# ═══════════════════════════════════════════════════════════════
+# STEP 1: Create Confidence Cone (Call Once Per Timestep)
+# ═══════════════════════════════════════════════════════════════
+confidence_mask = value_map._localize_new_data(
+    depth=depth,
+    tf_camera_to_episodic=camera_pose,
+    min_depth=0.5,
+    max_depth=10.0,
+    fov=79 * np.pi / 180
+)
+# Returns: (1000, 1000) confidence mask
+# - Automatically rotated to camera direction
+# - Automatically placed at camera position
+# - Confidence: 1.0 at FOV center, 0.0 at edges/outside
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 2: Project Objects and Update Both Channels
+# ═══════════════════════════════════════════════════════════════
+for obj in visible_objects:
+    # Get 3D point cloud from ConceptGraphs (already in world frame)
+    world_points = obj.point_cloud  # (N, 3) - (x, y, z)
+
+    # Convert to grid using VLFM's function
+    world_points_2d = world_points[:, :2]  # (N, 2) - ignore z for top-down
+    grid_coords = value_map._xy_to_px(world_points_2d)  # (N, 2) - (row, col)
+
+    # For each grid coordinate
+    for (grid_row, grid_col) in grid_coords:
+        # Bounds check
+        if not (0 <= grid_row < 1000 and 0 <= grid_col < 1000):
+            continue
+
+        # Look up confidence from cone mask
+        c_curr = confidence_mask[grid_row, grid_col]
+        if c_curr <= 0:  # Outside FOV or occluded
+            continue
+
+        # Get previous values
+        v_curr = obj.score
+        v_prev = value_map._value_map[grid_row, grid_col, 0]
+        c_prev = value_map._map[grid_row, grid_col]
+
+        # Update Channel 1: Semantic Value
+        if c_prev > 0:  # Temporal fusion
+            value_map._value_map[grid_row, grid_col, 0] = (
+                (c_curr * v_curr + c_prev * v_prev) / (c_curr + c_prev)
+            )
+        else:  # First observation
+            value_map._value_map[grid_row, grid_col, 0] = v_curr
+
+        # Update Channel 2: Confidence
+        if c_prev > 0:  # Temporal fusion
+            value_map._map[grid_row, grid_col] = (
+                (c_curr**2 + c_prev**2) / (c_curr + c_prev)
+            )
+        else:  # First observation
+            value_map._map[grid_row, grid_col] = c_curr
+```
+
+**Key Takeaway:**
+- Use `_localize_new_data()` to get confidence cone (automatically rotated/positioned)
+- Use `_xy_to_px()` to convert object point clouds to grid coordinates
+- Look up confidence from cone, update both semantic and confidence channels
+- The only difference from VLFM: we have object-specific scores, VLFM has uniform score
+
+---
+
+**CRITICAL: Confidence Mask and Value Map Share the Same Coordinate Space**
+
+The confidence mask returned by `_localize_new_data()` is in the **exact same (1000×1000) grid space** as the value map:
+
+```python
+# Proof from value_map.py:_localize_new_data() (lines 316-317)
+curr_map = np.zeros_like(self._map)  # ← Creates array with SAME shape as value map
+curr_map = place_img_in_img(curr_map, curr_data, px, py)
+return curr_map  # Returns (1000, 1000) aligned with value map
+```
+
+**What this means:**
+- ✅ Both use same size: (1000, 1000)
+- ✅ Both use same origin: `_episode_pixel_origin = [500, 500]`
+- ✅ Both use same scale: `pixels_per_meter = 20`
+- ✅ Index `[i, j]` refers to the **same world location** in both grids
+
+**Direct correspondence:**
+```python
+# After projecting a point to grid coordinates (480, 550):
+confidence_from_cone = confidence_mask[480, 550]      # Current FOV confidence
+semantic_value      = value_map._value_map[480, 550, 0]  # Accumulated semantic score
+prev_confidence     = value_map._map[480, 550]        # Accumulated confidence
+
+# All three refer to the EXACT SAME world location!
+# Think of them as aligned layers:
+#   Layer 1: confidence_mask[i, j]       - Current observation confidence
+#   Layer 2: value_map._map[i, j]        - Fused confidence (over time)
+#   Layer 3: value_map._value_map[i, j, 0] - Fused semantic value (over time)
+```
+
+This perfect alignment is why you can directly use `grid_coords` to index into both the confidence mask and value map channels.
+
+---
+
 ### Critical Clarifications
 
 Before diving into implementation, let's resolve common points of confusion:
