@@ -15,9 +15,11 @@ import numpy as np
 import torch
 from typing import List, Dict, Tuple, Optional
 
-# TODO: Add your actual imports here
-# from mobile_sam import sam_model_registry, SamPredictor
-# from transformers import AutoProcessor, AutoModel  # For SigLIP
+# Custom Wrappers
+from .sam_detector import SAMDetector
+from .siglip import SigLIP
+
+# TODO: Import ConceptGraphs utilities when available
 # from conceptgraph.slam.utils import create_object_pcd
 
 
@@ -63,33 +65,25 @@ class ObjectDetector:
 
     def __init__(
         self,
-        sam_model,           # MobileSAM model
-        siglip_model,        # SigLIP vision model
-        siglip_processor,    # SigLIP image processor
+        sam_detector: SAMDetector,      # SAMDetector instance
+        siglip: SigLIP,                 # SigLIP instance
         camera_intrinsics: np.ndarray,  # 3×3 intrinsics matrix K
-        min_mask_area: int = 100,       # Minimum pixels for valid mask
         min_points: int = 50,           # Minimum 3D points for valid object
-        device: str = 'cuda'            # Device for inference
     ):
         """
         Initialize the object detector.
 
         Args:
-            sam_model: Pretrained MobileSAM model
-            siglip_model: Pretrained SigLIP vision model
-            siglip_processor: SigLIP image processor
+            sam_detector: SAMDetector instance for mask generation
+            siglip: SigLIP instance for feature extraction
             camera_intrinsics: 3×3 camera intrinsics matrix K
             min_mask_area: Filter out masks smaller than this
             min_points: Filter out objects with fewer 3D points
-            device: 'cuda' or 'cpu'
         """
-        self.sam_model = sam_model
-        self.siglip_model = siglip_model
-        self.siglip_processor = siglip_processor
+        self.sam_detector = sam_detector
+        self.siglip = siglip
         self.camera_intrinsics = camera_intrinsics
-        self.min_mask_area = min_mask_area
         self.min_points = min_points
-        self.device = device
 
 
     def detect_objects(
@@ -114,13 +108,14 @@ class ObjectDetector:
         # ══════════════════════════════════════════════════════════════
         # TODO: Use SAM to get masks
         # Expected output: List of binary masks, each (H, W)
-        # Hint: sam_model.generate(rgb) or similar API
         # MobileSAM returns list of dicts with keys: 'segmentation', 'bbox', 'stability_score'
 
         masks = self._segment_with_sam(rgb)
 
-        # Filter small masks
-        masks = [m for m in masks if m['segmentation'].sum() >= self.min_mask_area]
+        # Discard low-confidence masks 
+        masks = [m for m in masks if m['predicted_iou'] > 0.88
+                 and m['stability_score'] > 0.95
+                 and m['area'] < (0.5 * rgb.shape[0] * rgb.shape[1])]
 
 
         # ══════════════════════════════════════════════════════════════
@@ -245,18 +240,15 @@ class ObjectDetector:
         """
         Run SAM segmentation on RGB image.
 
-        TODO: Implement SAM inference
-        Example:
-            predictor = SamPredictor(sam_model)
-            predictor.set_image(rgb)
-            masks = predictor.generate()  # Automatic mask generation
-
-        Returns: List of dicts with keys: 'segmentation', 'bbox', 'stability_score'
+        Returns: List of dicts with keys: 'segmentation', 'bbox', 'stability_score', 'predicted_iou
                  - 'segmentation': (H, W) binary mask
                  - 'bbox': (x, y, w, h) bounding box
                  - 'stability_score': float confidence score
+                 - 'predicted_iou': float IoU score
         """
-        raise NotImplementedError("Implement SAM segmentation")
+        # raise NotImplementedError("Implement SAM segmentation")
+        masks = self.sam_detector.segment_image(rgb)
+        return masks
 
 
     def _extract_global_features(self, rgb: np.ndarray) -> np.ndarray:
