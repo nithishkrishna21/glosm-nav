@@ -17,7 +17,7 @@ from typing import List, Dict, Tuple, Optional
 
 # Custom Wrappers
 from .sam_detector import SAMDetector
-from .siglip import SigLIP
+from .siglip2 import SigLIP
 
 # TODO: Import ConceptGraphs utilities when available
 # from conceptgraph.slam.utils import create_object_pcd
@@ -246,7 +246,7 @@ class ObjectDetector:
                  - 'stability_score': float confidence score
                  - 'predicted_iou': float IoU score
         """
-        # raise NotImplementedError("Implement SAM segmentation")
+
         masks = self.sam_detector.segment_image(rgb)
         return masks
 
