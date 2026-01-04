@@ -32,9 +32,9 @@ class SigLIP:
 
         self.device = device
         self.dtype = torch.float32
-        self.model = AutoModel.from_pretrained(model_name, torch_dtype=self.dtype, device_map = self.device)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.processor = AutoProcessor.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name, torch_dtype=self.dtype, device_map=self.device, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
 
     def encode_image(self, image: Union[np.ndarray, Image.Image]) -> np.ndarray:
         """
