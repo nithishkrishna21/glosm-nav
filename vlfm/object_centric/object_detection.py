@@ -11,13 +11,15 @@ This file depends on:
     - ConceptGraphs utils (for depth → point cloud conversion)
 """
 
+import cv2
 import numpy as np
 import torch
 from typing import List, Dict, Tuple, Optional
+from sklearn.cluster import DBSCAN
 
-# Custom Wrappers
-from .sam_detector import SAMDetector
-from .siglip2 import SigLIP
+# Custom Wrappers (Client classes for HTTP communication with model servers)
+from .sam_detector import MobileSAMClient
+from .siglip2 import SigLIPClient
 
 # TODO: Import ConceptGraphs utilities when available
 # from conceptgraph.slam.utils import create_object_pcd
@@ -65,25 +67,28 @@ class ObjectDetector:
 
     def __init__(
         self,
-        sam_detector: SAMDetector,      # SAMDetector instance
-        siglip: SigLIP,                 # SigLIP instance
+        sam_detector: MobileSAMClient,  # MobileSAMClient instance (HTTP client)
+        siglip: SigLIPClient,           # SigLIPClient instance (HTTP client)
         camera_intrinsics: np.ndarray,  # 3×3 intrinsics matrix K
         min_points: int = 50,           # Minimum 3D points for valid object
+        bbox_margin: int = 50,         # Margin to increase bounding box by
+        masked_weight: float = 0.75    # Weight for masked background in fusion
     ):
         """
         Initialize the object detector.
 
         Args:
-            sam_detector: SAMDetector instance for mask generation
-            siglip: SigLIP instance for feature extraction
+            sam_detector: MobileSAMClient instance for mask generation (connects to SAM server)
+            siglip: SigLIPClient instance for feature extraction (connects to SigLIP server)
             camera_intrinsics: 3×3 camera intrinsics matrix K
-            min_mask_area: Filter out masks smaller than this
             min_points: Filter out objects with fewer 3D points
         """
         self.sam_detector = sam_detector
         self.siglip = siglip
         self.camera_intrinsics = camera_intrinsics
         self.min_points = min_points
+        self.bbox_margin = bbox_margin
+        self.masked_weight = masked_weight
 
 
     def detect_objects(
@@ -106,9 +111,6 @@ class ObjectDetector:
         # ══════════════════════════════════════════════════════════════
         # STEP 1: Segment image with SAM
         # ══════════════════════════════════════════════════════════════
-        # TODO: Use SAM to get masks
-        # Expected output: List of binary masks, each (H, W)
-        # MobileSAM returns list of dicts with keys: 'segmentation', 'bbox', 'stability_score'
 
         masks = self._segment_with_sam(rgb)
 
@@ -121,12 +123,6 @@ class ObjectDetector:
         # ══════════════════════════════════════════════════════════════
         # STEP 2: Extract global feature ONCE (reused for all objects)
         # ══════════════════════════════════════════════════════════════
-        # TODO: Encode full RGB image with SigLIP
-        # Expected output: (1, D) feature vector where D = 768 or 1024 depending on model
-        # Hint:
-        #   inputs = siglip_processor(images=rgb, return_tensors="pt").to(device)
-        #   outputs = siglip_model.get_image_features(**inputs)
-        #   features = outputs / outputs.norm(dim=-1, keepdim=True)  # L2 normalize
 
         global_features = self._extract_global_features(rgb)
 
@@ -139,72 +135,44 @@ class ObjectDetector:
         for mask_data in masks:
             mask = mask_data['segmentation']  # (H, W) binary
             bbox = mask_data['bbox']          # (x, y, w, h)
-            confidence = mask_data.get('stability_score', 1.0)
+            confidence = mask_data['predicted_iou'] # float score
 
             # ──────────────────────────────────────────────────────────
             # STEP 3a: Extract 3 crops for HOV-SG fusion
             # ──────────────────────────────────────────────────────────
-            # TODO: Create 2 local crops from mask
-            # 1. Masked bbox crop (object + background in bbox) - "unmasked" in HOV-SG terms
-            # 2. Cropped masked crop (only object, background blacked out) - "masked" in HOV-SG terms
-            # Hint:
-            #   - Use bbox (x, y, w, h) to crop
-            #   - For masked crop: set pixels where mask==0 to black [0, 0, 0]
 
-            crop_masked_bbox = self._create_masked_bbox_crop(rgb, mask, bbox)
-            crop_masked_only = self._create_masked_crop(rgb, mask, bbox)
+            crop_bbox = self._create_bbox_crop(rgb, bbox, bbox_margin=self.bbox_margin)
+            crop_bbox = cv2.resize(crop_bbox, (512, 512))
+
+            crop_masked_bbox = self._create_masked_crop(rgb, mask, bbox)
+            crop_masked_bbox = cv2.resize(crop_masked_bbox, (512, 512))
 
 
             # ──────────────────────────────────────────────────────────
             # STEP 3b: Extract features for local crops using SigLIP
             # ──────────────────────────────────────────────────────────
-            # TODO: Encode both crops with SigLIP
-            # Expected output: (1, D) feature vectors
-            # Same process as global features but with cropped images
 
-            features_masked_bbox = self._extract_features(crop_masked_bbox)
-            features_masked_only = self._extract_features(crop_masked_only)
+            cropped_feats = self._extract_features(crop_bbox)
+            cropped_masked_feats = self._extract_features(crop_masked_bbox)
 
 
             # ──────────────────────────────────────────────────────────
             # STEP 3c: HOV-SG weighted fusion
             # ──────────────────────────────────────────────────────────
-            # TODO: Implement 2-stage fusion
-            # Stage 1: Combine masked_only and masked_bbox (local fusion)
-            #   F_l = 0.4418 * F_masked_only + 0.5582 * F_masked_bbox
-            #   F_l = F_l / ||F_l||  (L2 normalize)
-            #
-            # Stage 2: Combine F_l with global using similarity weighting
-            #   similarity = cosine_similarity(F_l, F_g)  # dot product since normalized
-            #   w = softmax([similarity])  # Convert to weight
-            #   F_final = w * F_g + (1 - w) * F_l
-            #   F_final = F_final / ||F_final||  (L2 normalize)
 
             fused_features = self._fuse_features(
                 global_features,
-                features_masked_bbox,
-                features_masked_only
+                cropped_feats,
+                cropped_masked_feats
             )
 
 
             # ──────────────────────────────────────────────────────────
             # STEP 3d: Project mask to 3D point cloud
             # ──────────────────────────────────────────────────────────
-            # TODO: Use ConceptGraphs' depth → point cloud conversion
-            # Input: depth, mask, camera_intrinsics, rgb (for colors - optional)
-            # Process:
-            #   1. Get masked depth pixels: depth[mask]
-            #   2. Get pixel coordinates: u, v where mask == True
-            #   3. Unproject using intrinsics:
-            #      x_cam = (u - cx) * depth / fx
-            #      y_cam = (v - cy) * depth / fy
-            #      z_cam = depth
-            # Output: (N, 3) point cloud in CAMERA frame
-            #
-            # Hint: You can reuse create_object_pcd() from ConceptGraphs
 
             point_cloud_camera = self._depth_to_pointcloud(
-                depth, mask, self.camera_intrinsics, rgb
+                depth, mask, self.camera_intrinsics
             )
 
             # Transform to world frame
@@ -233,7 +201,7 @@ class ObjectDetector:
 
 
     # ══════════════════════════════════════════════════════════════════
-    # Helper Methods to Implement
+    # Helper Methods
     # ══════════════════════════════════════════════════════════════════
 
     def _segment_with_sam(self, rgb: np.ndarray) -> List[Dict]:
@@ -255,191 +223,226 @@ class ObjectDetector:
         """
         Extract features from full RGB image using SigLIP.
 
-        TODO: Implement SigLIP encoding
-        Steps:
-            1. Preprocess image: inputs = siglip_processor(images=rgb, return_tensors="pt")
-            2. Extract features: outputs = siglip_model.get_image_features(**inputs)
-            3. L2 normalize: features = outputs / outputs.norm(dim=-1, keepdim=True)
-
-        Returns: (1, D) feature vector (D = 768 or 1024 depending on SigLIP variant)
+        Returns: (1, D) feature vector 
         """
-        raise NotImplementedError("Implement global feature extraction with SigLIP")
+        return self.siglip.encode_image(rgb)
+    
+    def increase_bbox_by_margin(self, bbox, margin):
+        """
+        Increases the size of a bounding box by the given margin.
 
+        :param bbox: The bounding box coordinates in XYWH format as a tuple of (x, y, w, h).
+        :param margin: The margin to increase the bounding box size by in pixels.
+        :return: The increased bounding box coordinates as a tuple of (x, y, w, h).
+        """
+        x, y, w, h = bbox
+        x -= margin
+        y -= margin
+        w += margin * 2
+        h += margin * 2
+        # Check if x is negative
+        if x < 0:
+            w += x
+            x = 0
 
-    def _create_masked_bbox_crop(
-        self, rgb: np.ndarray, mask: np.ndarray, bbox: np.ndarray
+        # Check if y is negative
+        if y < 0:
+            h += y
+            y = 0
+        return (x, y, w, h)
+
+    def _create_bbox_crop(
+        self, rgb: np.ndarray, bbox: Tuple, bbox_margin=0
     ) -> np.ndarray:
         """
-        Create crop of bounding box region (object + background).
-        This is the "unmasked" crop in HOV-SG terminology.
-
-        TODO: Crop RGB using bbox coordinates
-        Given bbox = (x, y, w, h):
-            crop = rgb[y:y+h, x:x+w]
+        This is the image crop of the mask based on its bounding box
 
         Returns: Cropped RGB image (h, w, 3)
         """
-        raise NotImplementedError("Implement masked bbox crop")
+        x, y, w, h = self.increase_bbox_by_margin(bbox, bbox_margin)
+        x, y, w, h = int(x), int(y), int(w), int(h)
+        return rgb[y : y + h, x : x +w]
 
 
     def _create_masked_crop(
-        self, rgb: np.ndarray, mask: np.ndarray, bbox: np.ndarray
+        self, rgb: np.ndarray, mask: np.ndarray, bbox: Tuple
     ) -> np.ndarray:
         """
-        Create crop with only object visible (background blacked out).
-        This is the "masked" crop in HOV-SG terminology.
-
-        TODO:
-        1. Crop RGB using bbox: crop = rgb[y:y+h, x:x+w]
-        2. Crop mask using bbox: mask_crop = mask[y:y+h, x:x+w]
-        3. Apply mask (set background pixels to 0):
-           crop[~mask_crop] = 0  # or [0, 0, 0]
+        Create an image of the isolated mask without background
 
         Returns: Cropped and masked RGB image (h, w, 3)
         """
-        raise NotImplementedError("Implement masked crop")
+
+        x, y, w, h = bbox
+        
+        # Apply the mask first
+        masked = rgb * np.expand_dims(mask, axis = -1)
+        x, y, w, h = int(x), int(y), int(w), int(h)
+        # Get the cropped mask
+        crop = masked[y : y + h, x : x + w]
+        return crop
+
 
 
     def _extract_features(self, crop: np.ndarray) -> np.ndarray:
         """
         Extract features from a crop using SigLIP.
 
-        TODO: Same as _extract_global_features but for a crop
-        Steps:
-            1. Preprocess: inputs = siglip_processor(images=crop, return_tensors="pt")
-            2. Extract: outputs = siglip_model.get_image_features(**inputs)
-            3. Normalize: features = outputs / outputs.norm(dim=-1, keepdim=True)
-
         Returns: (1, D) feature vector
         """
-        raise NotImplementedError("Implement feature extraction for crops")
+        return self.siglip.encode_image(crop)
 
 
     def _fuse_features(
         self,
-        global_feat: np.ndarray,      # (1, D)
-        masked_bbox_feat: np.ndarray, # (1, D) - "unmasked" in HOV-SG
-        masked_only_feat: np.ndarray  # (1, D) - "masked" in HOV-SG
+        F_g: np.ndarray,      # (1, D)
+        cropped_feats: np.ndarray,        # (1, D) - "unmasked" in HOV-SG
+        cropped_masked_feats: np.ndarray  # (1, D) - "masked" in HOV-SG
     ) -> np.ndarray:
         """
         Perform HOV-SG 2-stage weighted fusion.
 
-        TODO: Implement fusion logic from HOV-SG paper:
-
-        Stage 1: Local feature fusion
-            F_l = 0.4418 * masked_only_feat + 0.5582 * masked_bbox_feat
-            F_l = F_l / ||F_l||_2  (L2 normalize)
-
-        Stage 2: Global-local fusion with similarity weighting
-            similarity = F_l · F_g  (dot product, since both are normalized)
-            w = softmax([similarity])[0]  (convert to probability)
-            F_final = w * F_g + (1 - w) * F_l
-            F_final = F_final / ||F_final||_2  (L2 normalize)
-
-        Note: Since features are already L2 normalized, cosine similarity = dot product
-
         Returns: (1, D) fused feature vector
         """
-        raise NotImplementedError("Implement HOV-SG fusion")
 
+        fused_crop_feats = torch.from_numpy(
+            self.masked_weight * cropped_masked_feats +
+            (1- self.masked_weight) * cropped_feats    
+        )
+
+        F_l = np.float32(torch.nn.functional.normalize(fused_crop_feats, p=2, dim=-1).cpu())
+
+        # 1. Compute the cosine similarity between the local feature F_l and global feature F_g
+        cos = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
+        phi_l_G = cos(torch.from_numpy(F_l), torch.from_numpy(F_g))
+        w_i = torch.nn.functional.softmax(phi_l_G, dim=0).reshape(-1, 1)
+
+        # 2. Compute the final fused feature F_fused
+        F_fused = w_i * torch.from_numpy(F_g) + (1 - w_i) * torch.from_numpy(F_l)
+        F_fused = torch.nn.functional.normalize(F_fused, p=2, dim=-1)
+        F_fused = np.float32(F_fused.cpu())
+
+        return F_fused
 
     def _depth_to_pointcloud(
         self,
         depth: np.ndarray,           # (H, W)
         mask: np.ndarray,            # (H, W) binary
         camera_intrinsics: np.ndarray, # (3, 3)
-        rgb: np.ndarray              # (H, W, 3) - optional for colors
     ) -> np.ndarray:
         """
         Convert masked depth pixels to 3D point cloud in camera frame.
 
-        TODO: Implement depth unprojection using camera intrinsics
-
         Steps:
-        1. Extract camera intrinsics:
-           fx, fy = K[0, 0], K[1, 1]  (focal lengths)
-           cx, cy = K[0, 2], K[1, 2]  (principal point)
-
-        2. Get valid pixels:
-           valid_mask = (mask == True) & (depth > 0)
-           u, v = np.where(valid_mask)  # pixel coordinates
-           depths = depth[valid_mask]
-
-        3. Unproject to 3D (camera frame):
-           x_cam = (u - cx) * depths / fx
-           y_cam = (v - cy) * depths / fy
-           z_cam = depths
-
-        4. Stack into point cloud:
-           points = np.stack([x_cam, y_cam, z_cam], axis=-1)  # (N, 3)
-
-        Hint: You can also use ConceptGraphs' create_object_pcd() function
+        1. Extract camera intrinsics from K matrix
+        2. Get valid pixels where mask is True and depth > 0
+        3. Unproject to 3D using pinhole camera model
+        4. Return point cloud in camera frame
 
         Returns: (N, 3) point cloud in camera frame
         """
-        raise NotImplementedError("Implement depth to point cloud conversion")
+        # Extract camera intrinsics
+        fx = camera_intrinsics[0, 0]
+        fy = camera_intrinsics[1, 1]
+        cx = camera_intrinsics[0, 2]
+        cy = camera_intrinsics[1, 2]
 
+        # Remove points with invalid depth values
+        mask = np.logical_and(mask, depth > 0)
+
+        # Handle empty mask case
+        if mask.sum() == 0:
+            return np.zeros((0, 3), dtype=np.float32)
+
+        # Get pixel coordinates
+        height, width = depth.shape
+        x = np.arange(0, width, 1.0)
+        y = np.arange(0, height, 1.0)
+        u, v = np.meshgrid(x, y)
+
+        masked_depth = depth[mask]
+        u = u[mask]
+        v = v[mask]
+
+        x = (u - cx) * masked_depth / fx
+        y = (v - cy) * masked_depth / fy
+        z = masked_depth
+
+        points = np.stack((x, y, z), axis=-1)
+        points = points.reshape(-1, 3)
+
+        # Perturb the points a bit to avoid colinearity
+        points += np.random.normal(0, 4e-3, points.shape)
+
+        # Denoise with DBSCAN to remove outliers
+        points = self._denoise_point_cloud_dbscan(points)
+
+        return points
+
+    def _denoise_point_cloud_dbscan(
+        self,
+        points: np.ndarray,  # (N, 3)
+        eps: float = 0.02,   # Max distance between points in same cluster (2cm)
+        min_samples: int = 10  # Min points to form a dense cluster
+    ) -> np.ndarray:
+        """
+        Remove outlier points using DBSCAN clustering.
+
+        Keeps only the largest cluster (the main object), discarding:
+        - Isolated noise points (depth sensor errors)
+        - Small clusters (edge artifacts, reflections)
+
+        Args:
+            points: (N, 3) point cloud in camera frame
+            eps: Maximum distance between two points to be in same cluster (meters)
+            min_samples: Minimum points required to form a dense region
+
+        Returns:
+            (M, 3) denoised point cloud where M <= N
+        """
+        
+
+        # Handle empty or very small point clouds
+        if len(points) < min_samples:
+            return points
+
+        # Run DBSCAN clustering
+        clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(points)
+        labels = clustering.labels_
+
+        # labels[i] = -1 means noise (outlier)
+        # labels[i] >= 0 means cluster ID
+
+        valid_labels = labels[labels >= 0]  # Exclude noise (-1)
+
+        if(len(valid_labels) > 0):
+
+            # Find the most common label
+            unique_labels, counts = np.unique(valid_labels, return_counts=True)
+            largest_cluster_id = unique_labels[np.argmax(counts)]
+
+            largest_cluster_points = points[clustering.labels_ == largest_cluster_id]
+
+            if(len(largest_cluster_points) < 5):
+                return points
+
+            points = largest_cluster_points
+        
+        return points
 
     def _transform_to_world(
         self, point_cloud_camera: np.ndarray, camera_pose: np.ndarray
     ) -> np.ndarray:
         """
         Transform point cloud from camera frame to world frame.
-
-        TODO: Apply 4×4 transformation matrix
-
-        Steps:
-        1. Convert points to homogeneous coordinates:
-           points_homo = np.hstack([point_cloud_camera, np.ones((N, 1))])  # (N, 4)
-
-        2. Apply transformation:
-           points_world_homo = (camera_pose @ points_homo.T).T  # (N, 4)
-
-        3. Convert back to 3D:
-           points_world = points_world_homo[:, :3]  # (N, 3)
-
-        Returns: (N, 3) point cloud in world frame
         """
-        raise NotImplementedError("Implement camera to world transformation")
+        N = point_cloud_camera.shape[0]
 
+        points_homogeneous = np.hstack([point_cloud_camera, np.ones((N, 1))]) # (N, 4)
+        points_transformed = np.dot(camera_pose, points_homogeneous.T) # (4, N)
 
-# ══════════════════════════════════════════════════════════════════════
-# Usage Example (for reference)
-# ══════════════════════════════════════════════════════════════════════
+        points_transformed = points_transformed[:3, :] / points_transformed[3:4, :] # (3, N)
 
-if __name__ == "__main__":
-    # This is how Stage 1 will be used in the main pipeline
+        points_transformed = points_transformed.T # (N, 3)
 
-    # TODO: Load models
-    # from mobile_sam import sam_model_registry, SamPredictor
-    # from transformers import AutoProcessor, AutoModel
-    #
-    # sam_model = sam_model_registry["vit_t"](checkpoint="path/to/mobile_sam.pth")
-    # siglip_model = AutoModel.from_pretrained("google/siglip-base-patch16-224")
-    # siglip_processor = AutoProcessor.from_pretrained("google/siglip-base-patch16-224")
-
-    # Initialize detector
-    detector = ObjectDetector(
-        sam_model=None,  # TODO: Load MobileSAM
-        siglip_model=None,  # TODO: Load SigLIP
-        siglip_processor=None,  # TODO: Load SigLIP processor
-        camera_intrinsics=np.array([
-            [fx, 0, cx],
-            [0, fy, cy],
-            [0,  0,  1]
-        ])  # 3×3 K matrix
-    )
-
-    # Process a frame
-    rgb = np.zeros((480, 640, 3))  # Dummy RGB image
-    depth = np.zeros((480, 640))   # Dummy depth image
-    camera_pose = np.eye(4)        # Dummy camera pose
-
-    detections = detector.detect_objects(rgb, depth, camera_pose)
-
-    # Each detection has:
-    for det in detections:
-        print(f"Mask shape: {det.mask.shape}")           # (H, W)
-        print(f"Features shape: {det.features.shape}")   # (1, D)
-        print(f"Point cloud shape: {det.point_cloud.shape}")  # (N, 3)
-        print(f"Confidence: {det.confidence}")
+        return points_transformed

@@ -2566,3 +2566,115 @@ def create_3d_masks(self, masks, depth, full_pcd, full_pcd_tree, camera_pose):
 ---
 
 This pipeline provides a robust method for converting 2D semantic segmentation masks into accurate 3D point clouds suitable for persistent object mapping and scene graph construction.
+
+---
+
+## Appendix C: Directory Structure and Architecture
+
+### `vlfm/policy/` Directory
+**Purpose:** Contains the navigation policies (the "brains" that decide where to move)
+
+**Key files:**
+- `base_policy.py` - Abstract base class for all policies
+- `base_objectnav_policy.py` - Base class for ObjectNav policies
+  - This is where VLM clients are instantiated (GroundingDINO, SAM, YOLOv7, BLIP2)
+  - Handles object detection, mapping, and navigation orchestration
+- `itm_policy.py` - Image-Text Matching policy (uses BLIP2ITM for semantic scoring)
+- `habitat_policies.py` - Policies for Habitat simulator
+- `reality_policies.py` - Policies for real robot deployment
+
+**What they do:** These integrate all the components (VLMs, mapping, navigation) and make high-level decisions about where the robot should move next based on semantic information.
+
+### `vlfm/reality/` Directory
+**Purpose:** Real-world robot deployment code (Boston Dynamics Spot robot)
+
+**Key files:**
+- `objectnav_env.py` - ObjectNav environment wrapper for real Spot robot
+- `pointnav_env.py` - PointNav environment wrapper for real robot
+- `robots/` - Robot-specific drivers and hardware interfaces
+
+**What they do:** Handle interfacing with real robots - camera streams, motor commands, sensor fusion, coordinate transformations from robot odometry to global frames.
+
+### Implementation Plan for Object-Centric Policy
+
+**Do NOT create new directories.** Instead:
+
+1. **Create a new policy file** in the existing `vlfm/policy/` directory:
+   - Name: `object_centric_policy.py` or `hovsig_policy.py`
+   - Inherit from `BaseObjectNavPolicy` (following the pattern from `itm_policy.py`)
+   - Replace BLIP2ITM scoring with SigLIP + HOV-SG fusion scoring
+
+2. **Reuse existing infrastructure:**
+   - Use existing `reality/` directory as-is (for future real robot deployment)
+   - Use existing mapping classes: `ValueMap`, `ObjectPointCloudMap`, `ObstacleMap`, `FrontierMap`
+   - Use existing `BaseObjectNavPolicy` client instantiation pattern
+
+3. **Client instantiation pattern** (from `base_objectnav_policy.py`):
+   ```python
+   self._object_detector = GroundingDINOClient(port=int(os.environ.get("GROUNDING_DINO_PORT", "12181")))
+   self._coco_object_detector = YOLOv7Client(port=int(os.environ.get("YOLOV7_PORT", "12184")))
+   self._mobile_sam = MobileSAMClient(port=int(os.environ.get("SAM_PORT", "12183")))
+   ```
+
+4. **For the new object-centric policy:**
+   ```python
+   # vlfm/policy/object_centric_policy.py
+
+   from vlfm.policy.base_objectnav_policy import BaseObjectNavPolicy
+   from vlfm.object_centric.object_detection import ObjectDetector
+   from vlfm.object_centric.sam_detector import MobileSAMClient
+   from vlfm.object_centric.siglip2 import SigLIPClient
+
+   class ObjectCentricPolicy(BaseObjectNavPolicy):
+       def __init__(self, text_prompt: str, *args, **kwargs):
+           super().__init__(*args, **kwargs)
+
+           # Instantiate clients (connect to running model servers)
+           sam_client = MobileSAMClient(port=int(os.environ.get("SAM_PORT", "12183")))
+           siglip_client = SigLIPClient(port=int(os.environ.get("SIGLIP2_PORT", "12185")))
+
+           # Create Stage 1 detector
+           self.object_detector = ObjectDetector(
+               sam_detector=sam_client,
+               siglip=siglip_client,
+               camera_intrinsics=...,  # Extracted from observations
+               min_points=50
+           )
+
+           self._text_prompt = text_prompt
+           # Stages 2-4 will be implemented in this policy class
+   ```
+
+**Key insight:** The policy class orchestrates all 4 stages, using `ObjectDetector` for Stage 1.
+
+---
+
+## Appendix D: Understanding Coordinate Frames
+
+### Why Camera Frame and World Frame?
+
+**Camera Frame**: Coordinates relative to the camera
+- Example: "Chair is 2m forward, 0.5m right from camera"
+- Problem: Changes when the robot moves or turns
+
+**World Frame**: Fixed global coordinates in the room
+- Example: "Chair is at position (5.2, 3.1, 0.5) in the room"
+- Advantage: Never changes regardless of robot position
+
+### Example: Same Chair, Different Frames
+
+```
+Timestep 1 (robot facing north):
+  Camera frame: chair at (2.0, 0.5, 0.0)
+  World frame:  chair at (5.2, 3.1, 0.5)
+
+Timestep 2 (robot turned 90° east):
+  Camera frame: chair at (0.5, -2.0, 0.0)  ← Different!
+  World frame:  chair at (5.2, 3.1, 0.5)   ← Same!
+```
+
+Without world frame → map thinks there are 2 chairs
+With world frame → correctly recognizes it's the same chair
+
+This is why we transform from camera → world using the `camera_pose` matrix.
+
