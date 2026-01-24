@@ -21,9 +21,6 @@ from sklearn.cluster import DBSCAN
 from .sam_detector import MobileSAMClient
 from .siglip2 import SigLIPClient
 
-# TODO: Import ConceptGraphs utilities when available
-# from conceptgraph.slam.utils import create_object_pcd
-
 
 class Detection:
     """
@@ -377,6 +374,9 @@ class ObjectDetector:
         # Denoise with DBSCAN to remove outliers
         points = self._denoise_point_cloud_dbscan(points)
 
+        # Downsample to voxel grid to reduce point count
+        points = self._downsample_voxel(points)
+
         return points
 
     def _denoise_point_cloud_dbscan(
@@ -429,6 +429,35 @@ class ObjectDetector:
             points = largest_cluster_points
         
         return points
+
+    def _downsample_voxel(
+        self,
+        points: np.ndarray,
+        voxel_size: float = 0.025  # 2.5cm voxel grid (matches ConceptGraphs)
+    ) -> np.ndarray:
+        """
+        Downsample point cloud using voxel grid filtering.
+
+        Points within the same voxel are merged into one point.
+        This reduces point count while preserving geometric structure.
+
+        Args:
+            points: (N, 3) point cloud
+            voxel_size: Size of voxel grid in meters (default: 2.5cm)
+
+        Returns: (M, 3) downsampled point cloud where M <= N
+        """
+        if len(points) == 0:
+            return points
+
+        # Quantize points to voxel grid
+        voxel_indices = np.floor(points / voxel_size).astype(np.int32)
+
+        # Find unique voxels (removes duplicate points in same voxel)
+        _, unique_indices = np.unique(voxel_indices, axis=0, return_index=True)
+
+        # Return one point per voxel
+        return points[unique_indices]
 
     def _transform_to_world(
         self, point_cloud_camera: np.ndarray, camera_pose: np.ndarray
