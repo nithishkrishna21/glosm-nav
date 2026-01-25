@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 from typing import List
 from .object_detection import Detection
+import open3d as o3d
 
 
 class MapObject:
@@ -30,14 +31,14 @@ class MapObject:
     """
     def __init__(
         self,
-        point_cloud: np.ndarray,
-        features: np.ndarray,
+        point_cloud: o3d.geometry.PointCloud,
+        features: torch.Tensor,
         confidence: float,
         object_id: int
     ):
         self.object_id = object_id
         self.point_cloud = point_cloud
-        self.features = torch.from_numpy(features).float()
+        self.features = features
         self.confidence = confidence
         self.num_detections = 1
         self.is_visible = False
@@ -45,44 +46,31 @@ class MapObject:
         # Compute 3D bounding box
         self.bbox_3d = self._compute_bbox_3d(point_cloud)
 
-    def _compute_bbox_3d(self, points: np.ndarray) -> np.ndarray:
+    def _compute_bbox_3d(self, pcd: o3d.geometry.PointCloud) -> torch.Tensor:
         """
         Compute 3D axis-aligned bounding box from point cloud.
 
         Args:
-            points: (N, 3) point cloud
+            pcd: o3d.geometry.PointCloud
 
-        Returns: (2, 3) array with [min_xyz, max_xyz]
+        Returns: 8 points that define the bounding box
         """
-        min_xyz = points.min(axis = 0)
-        max_xyz = points.max(axis = 0)
-        return np.array([min_xyz, max_xyz])
+        # create the bounding box
+        v = o3d.geometry.OrientedBoundingBox.create_from_points(pcd.points)
+        # get the box points
+        v = np.asarray(v.get_box_points())
+        # return as tensor
+        return torch.from_numpy(v).float()
     
     def _downsample_voxel(
         self,
-        points: np.ndarray,
-        voxel_size: float = 0.025  # 2.5cm voxel grid 
-    ) -> np.ndarray:
-        """
-        Downsample point cloud using voxel grid filtering.
+        pcd: o3d.geometry.PointCloud,
+        voxel_size: float = 0.25,
+    ) -> o3d.geometry.PointCloud:
+        
+        pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
 
-        Args:
-            points: (N, 3) point cloud
-            voxel_size: Size of voxel grid in meters (default: 2.5cm)
-
-        Returns: (M, 3) downsampled point cloud where M <= N
-        """
-        if len(points) == 0:
-            return points
-
-        # Quantize points to voxel grid
-        voxel_indices = np.floor(points / voxel_size).astype(np.int32)
-
-        # Find unique voxels (removes duplicate points in same voxel)
-        _, unique_indices = np.unique(voxel_indices, axis=0, return_index=True)
-
-        # Return one point per voxel
-        return points[unique_indices]
+        return pcd
 
     def update(self, detection: Detection):
         """
@@ -90,18 +78,18 @@ class MapObject:
         """
 
         # append the new point cloud to the existing point cloud
-        merged_points = np.concatenate([self.point_cloud, detection.point_cloud], axis=0)
+        merged_point_cloud = self.point_cloud + detection.point_cloud
 
         # downsample to remove redundant points
-        self.point_cloud = self._downsample_voxel(merged_points)
+        self.point_cloud = self._downsample_voxel(merged_point_cloud)
 
         # recompute the bounding box
         self.bbox_3d = self._compute_bbox_3d(self.point_cloud)
 
         # update the semantic features
-        self.features = (self.num_detections * self.features + torch.from_numpy(detection.features)) / (self.num_detections + 1)
+        self.features = (self.num_detections * self.features + detection.features) / (self.num_detections + 1)
         # normalize the features
-        self.features = F.normalize(self.features, dim=0)
+        self.features = F.normalize(self.features, dim=-1)
 
         # update the confidence
         self.confidence = (self.num_detections * self.confidence + detection.confidence) / (self.num_detections + 1)
@@ -132,6 +120,13 @@ class ObjectMap:
         self.geometric_sim_type = geometric_sim_type
         self.nn_distance_threshold = nn_distance_threshold
         self.max_objects = max_objects
+        self.next_object_id = 0
+
+    def reset(self):
+        """
+        Reset the object map to empty.
+        """
+        self.objects = []
         self.next_object_id = 0
 
     def update(self, detections: List[Detection]):
@@ -206,12 +201,13 @@ class ObjectMap:
 
         # Compute bboxes for detections
         dec_bbox = [compute_3d_bbox_from_points(d.point_cloud) for d in detections]
-        dec_bbox = np.stack(dec_bbox, axis=0)  # (M, 2, 3)
+        dec_bbox = torch.stack(dec_bbox, dim=0)  # (M, 8, 3)
 
-        obj_bbox = np.stack([obj.bbox_3d for obj in self.objects], axis = 0)  # (N, 2, 3)
+        obj_bbox = torch.stack([obj.bbox_3d for obj in self.objects], dim=0)  # (N, 8, 3)
 
         # Compute IoU matrix
         iou_matrix = compute_3d_iou_batch(dec_bbox, obj_bbox) # (M, N)
+        iou_matrix = iou_matrix.float()
 
         return iou_matrix
     
@@ -219,25 +215,62 @@ class ObjectMap:
     def _compute_nnratio_similarities(
         self,
         detections: List[Detection]
-    ) -> np.ndarray:
+    ) -> torch.Tensor:
         """
         Compute (M×N) geometric similarity matrix using nnratio (nearest neighbor ratio).
 
         nnratio[i,j] = proportion of points in detection[i] that have nearest neighbors
                        in object[j] within distance threshold
 
-        Steps:
-        1. For each detection i and object j:
-           a. Find nearest neighbor distances from detection to object
-           b. Count points with distance < threshold
-           c. nnratio[i,j] = count / total_detection_points
-
         Args:
             detections: List of M detections
 
-        Returns: (M, N) numpy array of nnratio scores [0, 1]
+        Returns: (M, N) torch tensor of nnratio scores [0, 1]
         """
-        raise NotImplementedError("Compute batch nnratio geometric similarities")
+        M = len(detections)
+        N = len(self.objects)
+        overlap_matrix = np.zeros((M, N))
+
+        # Build KDTrees for all map objects (for efficient nearest neighbor search)
+        kdtrees = []
+        for obj in self.objects:
+            kdtree = o3d.geometry.KDTreeFlann(obj.point_cloud)
+            kdtrees.append(kdtree)
+
+        # Get detection point clouds as numpy arrays
+        det_points_list = [np.asarray(det.point_cloud.points) for det in detections]
+
+        # Compute pairwise overlaps
+        for i in range(M):
+            det_points = det_points_list[i]
+            num_det_points = len(det_points)
+
+            if num_det_points == 0:
+                continue
+
+            for j in range(N):
+                # Optional: skip if bounding boxes don't overlap (optimization)
+                # This saves computation for objects that are far apart
+                iou = compute_3d_iou_batch(
+                    self.objects[j].bbox_3d.unsqueeze(0),  # (1, 8, 3)
+                    compute_3d_bbox_from_points(detections[i].point_cloud).unsqueeze(0)  # (1, 8, 3)
+                )
+                if iou.item() < 1e-6:
+                    continue
+
+                # Count points within distance threshold
+                overlap_count = 0
+                for point in det_points:
+                    # Search for nearest neighbor
+                    [_, _, dist_sq] = kdtrees[j].search_knn_vector_3d(point, 1)
+                    # dist_sq is squared distance, compare with squared threshold
+                    if dist_sq[0] < self.nn_distance_threshold ** 2:
+                        overlap_count += 1
+
+                # Compute ratio
+                overlap_matrix[i, j] = overlap_count / num_det_points
+
+        return torch.from_numpy(overlap_matrix).float()
     
 
     def _compute_semantic_similarities(
@@ -256,7 +289,7 @@ class ObjectMap:
         Returns: (M, N) torch tensor of cosine similarities [-1, 1]
         """
         # Stack detection features into (M, D) tensor
-        det_features = torch.stack([torch.from_numpy(d.features).float() for d in detections], dim=0)  # (M, D)
+        det_features = torch.stack([d.features for d in detections], dim=0)  # (M, D)
 
         # Stack object features into (N, D) tensor
         obj_features = torch.stack([obj.features for obj in self.objects], dim=0)  # (N, D)
@@ -266,7 +299,7 @@ class ObjectMap:
 
         visual_sim = F.cosine_similarity(det_features, obj_features, dim=1)  # (M, N)
 
-        return visual_sim
+        return visual_sim.float()
 
     def _aggregate_similarities(
         self,
@@ -284,6 +317,7 @@ class ObjectMap:
         """
 
         sims = geometric_sim + semantic_sim  # Element-wise addition
+        sims = sims.float()
 
         return sims
 
@@ -352,18 +386,21 @@ class ObjectMap:
 # Helper Functions for 3D Geometry
 # ══════════════════════════════════════════════════════════════════════
 
-def compute_3d_bbox_from_points(points: np.ndarray) -> np.ndarray:
+def compute_3d_bbox_from_points(pcd: o3d.geometry.PointCloud) -> torch.Tensor:
     """
     Compute 3D axis-aligned bounding box from point cloud.
 
     Args:
-        points: (N, 3) point cloud
+        pcd: o3d.geometry.PointCloud
 
-    Returns: (2, 3) array with [min_xyz, max_xyz]
+    Returns: 8 points that define the bounding box
     """
-    min_xyz = points.min(axis = 0)
-    max_xyz = points.max(axis = 0)
-    return np.array([min_xyz, max_xyz])
+    # create the bounding box
+    v = o3d.geometry.OrientedBoundingBox.create_from_points(pcd.points)
+    # get the box points
+    v = np.asarray(v.get_box_points())
+    # return as tensor
+    return torch.from_numpy(v).float()
 
 
 def compute_3d_iou(bbox1: np.ndarray, bbox2: np.ndarray, use_iou=True) -> float:
@@ -371,8 +408,8 @@ def compute_3d_iou(bbox1: np.ndarray, bbox2: np.ndarray, use_iou=True) -> float:
     Compute IoU between two 3D axis-aligned bounding boxes.
 
     Args:
-        bbox1: (2, 3) [min_xyz, max_xyz]
-        bbox2: (2, 3) [min_xyz, max_xyz]
+        bbox1: (8, 3) [min_xyz, max_xyz]
+        bbox2: (8, 3) [min_xyz, max_xyz]
 
     Returns: IoU score [0, 1]
     """
@@ -404,26 +441,22 @@ def compute_3d_iou(bbox1: np.ndarray, bbox2: np.ndarray, use_iou=True) -> float:
     else:
         return max_overlap
 
-def compute_3d_iou_batch(bbox1: np.ndarray, bbox2: np.ndarray) -> torch.Tensor:
+def compute_3d_iou_batch(bbox1: torch.Tensor, bbox2: torch.Tensor) -> torch.Tensor:
     """
     Compute IoU between two sets of 3D bounding boxes (vectorized).
 
     Args:
-        bbox1: (M, 2, 3) - M bounding boxes
-        bbox2: (N, 2, 3) - N bounding boxes
+        bbox1: (M, 8, 3) - M bounding boxes
+        bbox2: (N, 8, 3) - N bounding boxes
 
     Returns: (M, N) IoU matrix
     """
 
-    # Convert ot torch tensors
-    bbox1 = torch.from_numpy(bbox1)  # Shape: (M, 2, 3)
-    bbox2 = torch.from_numpy(bbox2)  # Shape: (N, 2, 3)
-
     # Compute min and max for each box
-    bbox1_min = bbox1[:, 0, :]# Shape: (M, 3)
-    bbox1_max = bbox1[:, 1, :] # Shape: (M, 3)
-    bbox2_min = bbox2[:, 0, :] # Shape: (N, 3)
-    bbox2_max = bbox2[:, 1, :] # Shape: (N, 3)
+    bbox1_min, _ = bbox1.min(dim=1) # Shape: (M, 3)
+    bbox1_max, _ = bbox1.max(dim=1) # Shape: (M, 3)
+    bbox2_min, _ = bbox2.min(dim=1) # Shape: (N, 3)
+    bbox2_max, _ = bbox2.max(dim=1) # Shape: (N, 3)
 
     # Expand dimensions for broadcasting
     bbox1_min = bbox1_min.unsqueeze(1)  # Shape: (M, 1, 3)

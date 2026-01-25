@@ -15,7 +15,8 @@ import cv2
 import numpy as np
 import torch
 from typing import List, Dict, Tuple, Optional
-from sklearn.cluster import DBSCAN
+# from sklearn.cluster import DBSCAN
+import open3d as o3d
 
 # Custom Wrappers (Client classes for HTTP communication with model servers)
 from .sam_detector import MobileSAMClient
@@ -37,8 +38,8 @@ class Detection:
         self,
         mask: np.ndarray,
         bbox: np.ndarray,
-        features: np.ndarray,
-        point_cloud: np.ndarray,
+        features: torch.Tensor,
+        point_cloud: o3d.geometry.PointCloud,
         confidence: float
     ):
         self.mask = mask
@@ -178,7 +179,7 @@ class ObjectDetector:
             )
 
             # Filter: minimum points threshold
-            if len(point_cloud_world) < self.min_points:
+            if len(point_cloud_world.points) < self.min_points:
                 continue
 
 
@@ -295,38 +296,39 @@ class ObjectDetector:
         F_g: np.ndarray,      # (1, D)
         cropped_feats: np.ndarray,        # (1, D) - "unmasked" in HOV-SG
         cropped_masked_feats: np.ndarray  # (1, D) - "masked" in HOV-SG
-    ) -> np.ndarray:
+    ) -> torch.Tensor:
         """
         Perform HOV-SG 2-stage weighted fusion.
 
         Returns: (1, D) fused feature vector
         """
 
-        fused_crop_feats = torch.from_numpy(
-            self.masked_weight * cropped_masked_feats +
-            (1- self.masked_weight) * cropped_feats    
-        )
+        F_g = torch.from_numpy(F_g).float()
+        cropped_feats = torch.from_numpy(cropped_feats).float()
+        cropped_masked_feats = torch.from_numpy(cropped_masked_feats).float()
 
-        F_l = np.float32(torch.nn.functional.normalize(fused_crop_feats, p=2, dim=-1).cpu())
+        fused_crop_feats = self.masked_weight * cropped_masked_feats + (1- self.masked_weight) * cropped_feats    
+
+        F_l = torch.nn.functional.normalize(fused_crop_feats, p=2, dim=-1)
 
         # 1. Compute the cosine similarity between the local feature F_l and global feature F_g
         cos = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
-        phi_l_G = cos(torch.from_numpy(F_l), torch.from_numpy(F_g))
+        phi_l_G = cos(F_l, F_g)
         w_i = torch.nn.functional.softmax(phi_l_G, dim=0).reshape(-1, 1)
 
         # 2. Compute the final fused feature F_fused
-        F_fused = w_i * torch.from_numpy(F_g) + (1 - w_i) * torch.from_numpy(F_l)
+        F_fused = w_i * F_g + (1 - w_i) * F_l
         F_fused = torch.nn.functional.normalize(F_fused, p=2, dim=-1)
-        F_fused = np.float32(F_fused.cpu())
+        # F_fused = F_fused.cpu().numpy()
 
-        return F_fused
+        return F_fused.float()
 
     def _depth_to_pointcloud(
         self,
         depth: np.ndarray,           # (H, W)
         mask: np.ndarray,            # (H, W) binary
         camera_intrinsics: np.ndarray, # (3, 3)
-    ) -> np.ndarray:
+    ) -> o3d.geometry.PointCloud:
         """
         Convert masked depth pixels to 3D point cloud in camera frame.
 
@@ -349,7 +351,8 @@ class ObjectDetector:
 
         # Handle empty mask case
         if mask.sum() == 0:
-            return np.zeros((0, 3), dtype=np.float32)
+            # return np.zeros((0, 3), dtype=np.float32)
+            return o3d.geometry.PointCloud()
 
         # Get pixel coordinates
         height, width = depth.shape
@@ -371,107 +374,72 @@ class ObjectDetector:
         # Perturb the points a bit to avoid colinearity
         points += np.random.normal(0, 4e-3, points.shape)
 
-        # Denoise with DBSCAN to remove outliers
-        points = self._denoise_point_cloud_dbscan(points)
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points)
 
-        # Downsample to voxel grid to reduce point count
-        points = self._downsample_voxel(points)
+        return pcd
+    
 
-        return points
-
-    def _denoise_point_cloud_dbscan(
-        self,
-        points: np.ndarray,  # (N, 3)
-        eps: float = 0.02,   # Max distance between points in same cluster (2cm)
-        min_samples: int = 10  # Min points to form a dense cluster
-    ) -> np.ndarray:
-        """
-        Remove outlier points using DBSCAN clustering.
-
-        Keeps only the largest cluster (the main object), discarding:
-        - Isolated noise points (depth sensor errors)
-        - Small clusters (edge artifacts, reflections)
-
-        Args:
-            points: (N, 3) point cloud in camera frame
-            eps: Maximum distance between two points to be in same cluster (meters)
-            min_samples: Minimum points required to form a dense region
-
-        Returns:
-            (M, 3) denoised point cloud where M <= N
-        """
+    def _denoise_point_cloud_dbscan(self,
+        pcd: o3d.geometry.PointCloud,
+        eps = 0.2,
+        min_points = 10
+    ) -> o3d.geometry.PointCloud:
         
+        pcd_clusters = pcd.cluster_dbscan(eps=eps, min_points=min_points)
 
-        # Handle empty or very small point clouds
-        if len(points) < min_samples:
-            return points
+        # convert to numpy arrays
+        obj_points = np.asarray(pcd.points)
+        pcd_clusters = np.asarray(pcd_clusters)
 
-        # Run DBSCAN clustering
-        clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(points)
-        labels = clustering.labels_
-
-        # labels[i] = -1 means noise (outlier)
-        # labels[i] >= 0 means cluster ID
-
-        valid_labels = labels[labels >= 0]  # Exclude noise (-1)
+        # count all the labels in the clusters
+        valid_labels = pcd_clusters[pcd_clusters >= 0]
 
         if(len(valid_labels) > 0):
 
-            # Find the most common label
-            unique_labels, counts = np.unique(valid_labels, return_counts=True)
+            unique_labels, counts = np.unique(valid_labels, return_counts = True)
             largest_cluster_id = unique_labels[np.argmax(counts)]
 
-            largest_cluster_points = points[clustering.labels_ == largest_cluster_id]
+            largest_cluster_points = obj_points[pcd_clusters == largest_cluster_id]
 
             if(len(largest_cluster_points) < 5):
-                return points
+                return pcd
 
-            points = largest_cluster_points
+            largest_cluster_pcd = o3d.geometry.PointCloud()
+            largest_cluster_pcd.points = o3d.utility.Vector3dVector(largest_cluster_points)
+            pcd = largest_cluster_pcd 
         
-        return points
-
+        return pcd
+    
     def _downsample_voxel(
         self,
-        points: np.ndarray,
-        voxel_size: float = 0.025  # 2.5cm voxel grid (matches ConceptGraphs)
-    ) -> np.ndarray:
-        """
-        Downsample point cloud using voxel grid filtering.
+        pcd: o3d.geometry.PointCloud,
+        voxel_size: float = 0.25,
+    ) -> o3d.geometry.PointCloud:
+        
+        pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
 
-        Points within the same voxel are merged into one point.
-        This reduces point count while preserving geometric structure.
-
-        Args:
-            points: (N, 3) point cloud
-            voxel_size: Size of voxel grid in meters (default: 2.5cm)
-
-        Returns: (M, 3) downsampled point cloud where M <= N
-        """
-        if len(points) == 0:
-            return points
-
-        # Quantize points to voxel grid
-        voxel_indices = np.floor(points / voxel_size).astype(np.int32)
-
-        # Find unique voxels (removes duplicate points in same voxel)
-        _, unique_indices = np.unique(voxel_indices, axis=0, return_index=True)
-
-        # Return one point per voxel
-        return points[unique_indices]
-
+        return pcd
+    
     def _transform_to_world(
-        self, point_cloud_camera: np.ndarray, camera_pose: np.ndarray
-    ) -> np.ndarray:
+        self,
+        camera_object_pcd: o3d.geometry.PointCloud,
+        camera_pose: np.ndarray
+    ) -> o3d.geometry.PointCloud:
+        
         """
         Transform point cloud from camera frame to world frame.
         """
-        N = point_cloud_camera.shape[0]
 
-        points_homogeneous = np.hstack([point_cloud_camera, np.ones((N, 1))]) # (N, 4)
-        points_transformed = np.dot(camera_pose, points_homogeneous.T) # (4, N)
+        if camera_pose is not None:
+            world_object_pcd = camera_object_pcd.transform(camera_pose)
+        else:
+            world_object_pcd = camera_object_pcd
 
-        points_transformed = points_transformed[:3, :] / points_transformed[3:4, :] # (3, N)
+        # downsample pcd
+        world_object_pcd = self._downsample_voxel(pcd=world_object_pcd)
 
-        points_transformed = points_transformed.T # (N, 3)
+        # denoise pcd
+        world_object_pcd = self._denoise_point_cloud_dbscan(pcd=world_object_pcd)
 
-        return points_transformed
+        return world_object_pcd
