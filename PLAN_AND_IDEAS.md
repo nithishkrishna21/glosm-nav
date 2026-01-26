@@ -29,7 +29,7 @@ Our approach builds upon VLFM by replacing frontier-based scoring with object-ce
 #### Step 3: Semantic Scoring
 
 1. **Episode Initialization**: Encode target text once at start (e.g., "bed")
-2. **Per-Timestep Scoring**: For each object in the map:
+2. **Per-Timestep Scoring**: For every visible object in the map:
    - Compute cosine similarity between object's fused features and target features
    - Assign relevance score (0-1) indicating likelihood of being the target
 3. **Result**: Each mapped object has a semantic score
@@ -241,7 +241,66 @@ This verifies object detections by asking "Is this a [object]?" to reduce false 
 
 ## Section 3: Implementation Options for Proposed Methodology
 
-### Option 1: ImageBind (Recommended)
+### Option 1: SigLIP 2 (Latest from Google - February 2025)
+
+#### Overview
+
+Google's newest vision-language encoder, released February 2025. SigLIP 2 extends the original SigLIP with improved semantic understanding, localization, and dense features.
+
+#### Key Advantages
+
+1. **State-of-the-art Performance**: Outperforms SigLIP and CLIP at all model scales
+2. **Recent Release**: Literally cutting-edge (Feb 2025)
+3. **Better Capabilities**: Improved zero-shot classification, image-text retrieval, and VLM transfer
+4. **Multilingual Support**: Enhanced multilingual vision-language understanding
+5. **Easy Integration**: Available on HuggingFace with simple API
+
+#### Implementation Workflow
+
+```python
+# Similar to ImageBind workflow
+from transformers import AutoModel, AutoProcessor
+
+# Load SigLIP 2
+processor = AutoProcessor.from_pretrained("google/siglip2-...")
+model = AutoModel.from_pretrained("google/siglip2-...")
+
+# 1. Extract features from 3 crops per object
+feat_full = model.get_image_features(processor(full_image))
+feat_crop_bg = model.get_image_features(processor(crop_with_bg))
+feat_crop_no_bg = model.get_image_features(processor(crop_no_bg))
+
+# 2. Weighted fusion
+object_features = (w1*feat_full + w2*feat_crop_bg + w3*feat_crop_no_bg)
+object_features = object_features / object_features.norm(dim=-1, keepdim=True)
+
+# 3. Encode target
+target_features = model.get_text_features(processor(text="bed"))
+
+# 4. Score
+score = (object_features @ target_features.T).item()
+```
+
+#### Pros
+- Latest model (Feb 2025), most recent research
+- Better than CLIP and original SigLIP
+- Production-ready, well-supported
+- HuggingFace integration
+
+#### Cons
+- Very new (less community testing than CLIP)
+- Not DINOv2/v3 based (standard vision encoder)
+
+#### When to Use
+- If you want the latest and best vision-language model
+- If you prefer proven Google models over Meta
+- For maximum performance without DINOv2 requirement
+
+#### References
+- [SigLIP 2 ArXiv Paper](https://arxiv.org/pdf/2502.14786)
+- [HuggingFace Blog](https://huggingface.co/blog/siglip2)
+
+### Option 2: ImageBind (Recommended)
 
 #### Why ImageBind?
 
@@ -367,72 +426,6 @@ class ImageBindWrapper:
 3. **Add fusion step** before storing object features
 4. **Keep everything else unchanged**: value map projection, confidence weighting, frontier selection
 
-#### Why Not Just Use CLIP?
-
-While CLIP also has vision-text alignment:
-- ImageBind's vision encoder (DINOv2-based) has better object-centric features
-- ImageBind is trained on more diverse data modalities
-- Stays within Meta's ecosystem (DINOv2, SAM, ImageBind)
-
-### Option 2: SigLIP 2 (Latest from Google - February 2025)
-
-#### Overview
-
-Google's newest vision-language encoder, released February 2025. SigLIP 2 extends the original SigLIP with improved semantic understanding, localization, and dense features.
-
-#### Key Advantages
-
-1. **State-of-the-art Performance**: Outperforms SigLIP and CLIP at all model scales
-2. **Recent Release**: Literally cutting-edge (Feb 2025)
-3. **Better Capabilities**: Improved zero-shot classification, image-text retrieval, and VLM transfer
-4. **Multilingual Support**: Enhanced multilingual vision-language understanding
-5. **Easy Integration**: Available on HuggingFace with simple API
-
-#### Implementation Workflow
-
-```python
-# Similar to ImageBind workflow
-from transformers import AutoModel, AutoProcessor
-
-# Load SigLIP 2
-processor = AutoProcessor.from_pretrained("google/siglip2-...")
-model = AutoModel.from_pretrained("google/siglip2-...")
-
-# 1. Extract features from 3 crops per object
-feat_full = model.get_image_features(processor(full_image))
-feat_crop_bg = model.get_image_features(processor(crop_with_bg))
-feat_crop_no_bg = model.get_image_features(processor(crop_no_bg))
-
-# 2. Weighted fusion
-object_features = (w1*feat_full + w2*feat_crop_bg + w3*feat_crop_no_bg)
-object_features = object_features / object_features.norm(dim=-1, keepdim=True)
-
-# 3. Encode target
-target_features = model.get_text_features(processor(text="bed"))
-
-# 4. Score
-score = (object_features @ target_features.T).item()
-```
-
-#### Pros
-- Latest model (Feb 2025), most recent research
-- Better than CLIP and original SigLIP
-- Production-ready, well-supported
-- HuggingFace integration
-
-#### Cons
-- Very new (less community testing than CLIP)
-- Not DINOv2/v3 based (standard vision encoder)
-
-#### When to Use
-- If you want the latest and best vision-language model
-- If you prefer proven Google models over Meta
-- For maximum performance without DINOv2 requirement
-
-#### References
-- [SigLIP 2 ArXiv Paper](https://arxiv.org/pdf/2502.14786)
-- [HuggingFace Blog](https://huggingface.co/blog/siglip2)
-
 ### Option 3: CLIP (Baseline)
 
 #### Overview
@@ -468,38 +461,6 @@ Use actual DINOv3 for vision features with a lightweight MLP adapter (3.15M para
 3. **CLIP Text Encoder**: Standard CLIP for text features
 4. **Compute Similarity**: Cosine similarity in CLIP's aligned space
 
-#### Implementation Workflow
-
-```python
-# Using dinov3clip package
-from dinov3clip import load_model
-
-# Load DINOv3 + adapter
-dinov3_model = load_dinov3()
-adapter = load_adapter("path/to/checkpoint.pt")
-clip_text = load_clip_text_encoder()
-
-# 1. Extract DINOv3 features from 3 crops
-feat_full = dinov3_model(full_image)
-feat_crop_bg = dinov3_model(crop_with_bg)
-feat_crop_no_bg = dinov3_model(crop_no_bg)
-
-# 2. Map to CLIP space via adapter
-feat_full_clip = adapter(feat_full)
-feat_crop_bg_clip = adapter(feat_crop_bg)
-feat_crop_no_bg_clip = adapter(feat_crop_no_bg)
-
-# 3. Weighted fusion
-object_features = (w1*feat_full_clip + w2*feat_crop_bg_clip + w3*feat_crop_no_bg_clip)
-object_features = object_features / object_features.norm(dim=-1, keepdim=True)
-
-# 4. Encode target with CLIP text encoder
-target_features = clip_text("bed")
-
-# 5. Score
-score = (object_features @ target_features.T).item()
-```
-
 #### Pros
 - **Actual DINOv3**: Get the DINOv3 features you originally wanted
 - **Pre-trained adapter**: No training required
@@ -530,35 +491,12 @@ score = (object_features @ target_features.T).item()
 
 | Option | Difficulty | Performance | Speed | Vision Backbone | Best For |
 |--------|-----------|-------------|-------|----------------|----------|
-| **ImageBind** | Easy | High | Fast | DINOv2 | **Recommended: Best balance** |
-| **SigLIP 2** | Easy | Very High | Fast | Standard ViT | Latest SOTA, Google ecosystem |
+| **SigLIP 2** | Easy | Very High | Fast | Standard ViT | **Recommended: Latest SOTA** |
+| **ImageBind** | Easy | High | Fast | DINOv2 | Balanced choice, DINOv2 features |
 | **CLIP** | Very Easy | Medium | Very Fast | Standard ViT | Baseline, prototyping |
 | **DINOv3-CLIP** | Medium | Medium-High* | Fast | DINOv3 | If you must have DINOv3 |
 
 *Performance depends on domain match
-
-### Our Recommendation
-
-**Start with ImageBind (Option 1)** for these reasons:
-1. Best balance of performance, ease of implementation, and alignment with goals
-2. DINOv2-quality features (very close to DINOv3)
-3. No training required, pre-aligned embeddings
-4. Clear path to implementation
-5. Meta ecosystem (pairs well with SAM, DINOv2)
-
-**Consider SigLIP 2 (Option 2)** if:
-- You want the absolute latest model (Feb 2025)
-- You prefer Google's ecosystem
-- DINOv2-specific features aren't critical
-
-**Fall back to CLIP (Option 3)** only for:
-- Quick baseline comparisons
-- Maximum stability requirements
-
-**Try DINOv3-CLIP (Option 4)** only if:
-- You specifically need DINOv3 (not DINOv2)
-- You're willing to accept potential performance gaps
-- You want to experiment with actual DINOv3
 
 ---
 
@@ -1104,70 +1042,7 @@ def _get_best_frontier(
 3. Avoid cyclic behavior
 4. Fallback to closest if stuck
 
----
-
-### Visual Comparison: VLFM vs Our Approach
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      VLFM (Original)                        │
-├─────────────────────────────────────────────────────────────┤
-│ RGB Frame → BLIP2-ITM(full_image, "bed") → Score: 0.8      │
-│      ↓                                                       │
-│ Project to FOV cone on value map                            │
-│      ↓                                                       │
-│ Value Map: [Entire FOV cone = 0.8]                         │
-│      ↓                                                       │
-│ Extract frontiers → Score using value map → Pick best      │
-└─────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────┐
-│                   Our Approach (Object-Centric)             │
-├─────────────────────────────────────────────────────────────┤
-│ RGB Frame → SAM segment → For each object:                 │
-│   ├─ Extract 3 crops → Weighted fusion → Object features   │
-│   └─ VLM(object_features, "bed") → Object scores           │
-│                 ↓                                            │
-│ Build/Update persistent 3D object map                      │
-│                 ↓                                            │
-│ Project object point clouds + scores to value map          │
-│                 ↓                                            │
-│ Value Map: [Only at object locations with their scores]    │
-│                 ↓                                            │
-│ Extract frontiers → Score using value map → Pick best      │
-│                     (Same as VLFM)                          │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Comparison Table
-
-| Aspect | VLFM (Original) | Our Approach |
-|--------|-----------------|---------------|
-| **What's scored** | Full RGB frames (single view) | Individual objects (3-crop fusion) |
-| **Score computation** | `BLIP2-ITM(image, text)` | `VLM(fused_object_features, text)` |
-| **Scores per frame** | 1 (entire view) | N (one per detected object) |
-| **Persistence** | None (ephemeral per frame) | Yes (persistent 3D object map) |
-| **Value map projection** | Cone-shaped FOV region | Object point cloud locations |
-| **Projection area** | Large (entire visible cone) | Sparse (only object locations) |
-| **Confidence mechanism** | FOV-based (cos² falloff) | FOV-based (reuse VLFM's cos² falloff) |
-| **Semantic value fusion** | ✅ v = (c·v_curr + c_prev·v_prev)/(c + c_prev) | ✅ Same formula |
-| **Confidence fusion** | ✅ c = (c_curr² + c_prev²)/(c_curr + c_prev) | ✅ Same formula |
-| **Frontier extraction** | ✅ Same | ✅ Same (reuse VLFM) |
-| **Frontier scoring** | ✅ Same | ✅ Same (reuse VLFM) |
-| **Frontier selection** | ✅ Same | ✅ Same (reuse VLFM) |
-
-### Key Insights
-
-**VLFM provides the complete infrastructure:**
-- Value map with two-channel structure (semantic values + confidence)
-- Confidence-weighted temporal fusion formulas
-- Frontier extraction, scoring, and selection mechanisms
-- All of this works perfectly for object-centric scoring
-
-**Our contribution is the scoring mechanism:**
-- VLFM: Single score per view → broadcast across FOV cone
-- Us: Per-object scores → project to specific point cloud locations
-- Everything downstream (frontiers, navigation) stays identical
+Detailed comparison with our approach is in Part D.
 
 ---
 
@@ -1202,11 +1077,6 @@ cam_x, cam_y = tf_camera_to_episodic[:2, 3] / tf_camera_to_episodic[3, 3]
 px = int(cam_x * self.pixels_per_meter) + self._episode_pixel_origin[0]
 py = int(-cam_y * self.pixels_per_meter) + self._episode_pixel_origin[1]
 ```
-
-**Why VLFM Can Use This Shortcut:**
-- Single uniform score across entire FOV
-- Creates filled cone contour (not per-pixel projection)
-- Rotates and overlays the mask as a whole
 
 **For Our Object-Centric Approach:**
 
@@ -1446,8 +1316,6 @@ This perfect alignment is why you can directly use `grid_coords` to index into b
 
 ### Critical Clarifications
 
-Before diving into implementation, let's resolve common points of confusion:
-
 #### Q1: How do objects get their confidence scores?
 
 **A:** Objects **don't have intrinsic confidence scores**. Instead, confidence is **spatial** - it depends on where the object's pixels fall in the camera's FOV:
@@ -1458,28 +1326,7 @@ Before diving into implementation, let's resolve common points of confusion:
 
 When we project an object to the value map, we look up the confidence at each pixel location based on the current camera FOV.
 
-#### Q2: Do we score only newly created/updated objects?
-
-**A:** **NO!** We score **ALL visible objects** in the current FOV, not just newly created/updated ones.
-
-**Why this is critical:**
-- Object association tracks which objects were matched/created this timestep
-- But for value map projection, we need **all objects currently in FOV**
-- This allows temporal fusion to work correctly - better views update previous observations
-
-**Example showing why:**
-```
-Timestep t-1: Bed detected at edge of FOV → low confidence (0.3)
-Timestep t: Robot rotates, bed now at center of FOV
-  - Object association: MATCHED with existing bed (not "newly created")
-  - But we MUST re-project bed with NEW high confidence (1.0)!
-  - Temporal fusion formula ensures center view dominates
-  - Result: value_map updates from 0.85 → 0.87 (improved by better view)
-```
-
-If we only projected newly created/updated objects, we'd miss the opportunity to improve the value map with better viewpoints!
-
-#### Q3: How do we project objects to the value map?
+#### Q2: How do we project objects to the value map?
 
 **A:** For each visible object:
 1. Get its 3D point cloud (Nx3 array of world coordinates)
@@ -1489,257 +1336,32 @@ If we only projected newly created/updated objects, we'd miss the opportunity to
 
 ---
 
-### Complete Timestep Workflow
+## Part C: Pipeline Summary & Worked Example
 
-```python
-# ============================================================================
-# TIMESTEP t: Complete Pipeline
-# ============================================================================
+### Pipeline Summary (5 Steps)
 
-# ──────────────────────────────────────────────────────────────────────────
-# STEP 1: Get Observations
-# ──────────────────────────────────────────────────────────────────────────
-rgb, depth, camera_pose = get_observation()
-# rgb: (H, W, 3) RGB image
-# depth: (H, W) depth image
-# camera_pose: 4x4 transformation matrix (camera → world)
+**Step 1: Segmentation & Feature Extraction**
+- Use MobileSAM to segment objects → get masks
+- For each object: Extract 3 crops → HOV-SG weighted fusion → fused features
+- Project mask to 3D point cloud using depth
 
-# ──────────────────────────────────────────────────────────────────────────
-# STEP 2: Segment Objects
-# ──────────────────────────────────────────────────────────────────────────
-masks = SAM.segment(rgb)  # List of binary masks, one per detected object
+**Step 2: Object Association & Map Update**
+- Compute semantic + geometric similarity with existing objects
+- Greedy matching: Merge if match found, create new object if not
 
-# ──────────────────────────────────────────────────────────────────────────
-# STEP 3: Extract Features & Create Detections
-# ──────────────────────────────────────────────────────────────────────────
-detections = []
+**Step 3: Score Visible Objects**
+- Get ALL visible objects in current FOV (not just new/updated!)
+- Score each: `object.score = cosine_similarity(object.features, target_embedding)`
 
-# Encode full image ONCE (global feature)
-F_g = VLM.encode_vision(rgb)  # Shape: (1, D)
+**Step 4: Project to Value Map**
+- Project each object's 3D point cloud → 2D grid coordinates
+- Look up FOV-based confidence at each location
+- Apply temporal fusion formulas (confidence-weighted averaging)
 
-for mask in masks:
-    # 3a. Extract 3 crops (HOV-SG style)
-    crop_unmasked = crop_bbox(rgb, mask, block_background=False)
-    crop_masked = crop_bbox(rgb, mask, block_background=True)
+**Step 5: Frontier Selection (Reuse VLFM)**
+- Extract frontiers → Score using semantic values → Select best
 
-    F_l_unmasked = VLM.encode_vision(crop_unmasked)  # Shape: (1, D)
-    F_l_masked = VLM.encode_vision(crop_masked)      # Shape: (1, D)
-
-    # 3b. Stage 1 fusion: Combine masked/unmasked local features
-    F_l = 0.4418 * F_l_masked + 0.5582 * F_l_unmasked
-    F_l = F_l / F_l.norm(dim=-1, keepdim=True)  # L2 normalize
-
-    # 3c. Stage 2 fusion: Combine with global feature
-    similarity = torch.nn.functional.cosine_similarity(F_l, F_g, dim=-1)
-    w = torch.nn.functional.softmax(similarity, dim=0).reshape(-1, 1)
-    fused_features = w * F_g + (1 - w) * F_l
-    fused_features = fused_features / fused_features.norm(dim=-1, keepdim=True)
-
-    # 3d. Project mask to 3D point cloud
-    point_cloud_3d = depth_to_pointcloud(depth, mask, camera_pose)
-
-    detections.append({
-        'features': fused_features,     # Shape: (1, D)
-        'point_cloud': point_cloud_3d,  # Shape: (N, 3) - N 3D points
-        'mask': mask                     # Shape: (H, W) - binary mask
-    })
-
-# ──────────────────────────────────────────────────────────────────────────
-# STEP 4: Object Association (ConceptGraphs approach)
-# ──────────────────────────────────────────────────────────────────────────
-newly_created_objects = []
-updated_objects = []
-
-for detection in detections:
-    # 4a. Find existing objects with geometric overlap
-    overlapping_objects = find_overlapping_objects(
-        detection.point_cloud,
-        object_map
-    )
-
-    if len(overlapping_objects) == 0:
-        # No overlap → Create new object
-        new_obj = Object(
-            features=detection.features,
-            point_cloud=detection.point_cloud,
-            num_observations=1
-        )
-        object_map.add(new_obj)
-        newly_created_objects.append(new_obj)
-    else:
-        # 4b. Compute similarity with all overlapping objects
-        similarities = []
-        for obj in overlapping_objects:
-            # Geometric similarity (point cloud overlap)
-            phi_geo = nnratio(detection.point_cloud, obj.point_cloud)
-
-            # Semantic similarity (feature cosine distance)
-            phi_sem = (detection.features @ obj.features.T / 2 + 0.5).item()
-
-            # Overall similarity
-            phi_total = phi_sem + phi_geo
-            similarities.append((obj, phi_total))
-
-        # 4c. Greedy assignment: pick best match
-        best_match, best_sim = max(similarities, key=lambda x: x[1])
-
-        if best_sim > delta_sim:  # Threshold (e.g., 1.0)
-            # 4d. Fuse detection with existing object
-            n = best_match.num_observations
-
-            # Update features (running average)
-            best_match.features = (n * best_match.features + detection.features) / (n + 1)
-
-            # Update point cloud (merge + downsample)
-            best_match.point_cloud = merge_pointclouds(
-                best_match.point_cloud,
-                detection.point_cloud
-            )
-
-            best_match.num_observations += 1
-            updated_objects.append(best_match)
-        else:
-            # No good match → Create new object
-            new_obj = Object(
-                features=detection.features,
-                point_cloud=detection.point_cloud,
-                num_observations=1
-            )
-            object_map.add(new_obj)
-            newly_created_objects.append(new_obj)
-
-# ──────────────────────────────────────────────────────────────────────────
-# STEP 5: Get ALL Visible Objects (Not Just New/Updated!)
-# ──────────────────────────────────────────────────────────────────────────
-# CRITICAL: We need ALL objects in current FOV, not just newly created/updated
-visible_objects = get_visible_objects_in_fov(
-    object_map,
-    camera_pose,
-    fov=79 * np.pi / 180,  # Field of view in radians
-    max_depth=10.0          # Maximum visible distance (meters)
-)
-
-# This includes:
-# - Newly created objects (from this timestep)
-# - Updated objects (matched and fused this timestep)
-# - Existing objects that are still in FOV but weren't detected this timestep
-
-# ──────────────────────────────────────────────────────────────────────────
-# STEP 6: Score ALL Visible Objects
-# ──────────────────────────────────────────────────────────────────────────
-# Encode target text ONCE at episode start (cache for all timesteps)
-if not hasattr(self, '_target_features'):
-    self._target_features = VLM.encode_text("bed")  # Shape: (1, D)
-
-for obj in visible_objects:
-    # Compute cosine similarity between object features and target
-    obj.current_score = (obj.features @ self._target_features.T).item()
-    # Result: scalar in range [-1, 1], typically [0, 1]
-
-# ──────────────────────────────────────────────────────────────────────────
-# STEP 7: Create FOV-Based Confidence Mask (REUSE VLFM!)
-# ──────────────────────────────────────────────────────────────────────────
-confidence_mask_2d = value_map._localize_new_data(
-    depth=depth,
-    tf_camera_to_episodic=camera_pose,
-    min_depth=0.5,
-    max_depth=10.0,
-    fov=79 * np.pi / 180
-)
-# Returns: (1000, 1000) array with confidence values [0, 1]
-# - 1.0 at center of FOV (optical axis)
-# - 0.0 at edges/outside FOV
-# - Smooth cos² falloff in between
-# - Already rotated to camera yaw and overlaid at camera position!
-
-# ──────────────────────────────────────────────────────────────────────────
-# STEP 8: Project ALL Visible Objects to Value Map
-# ──────────────────────────────────────────────────────────────────────────
-for obj in visible_objects:
-    # 8a. Project 3D point cloud to 2D grid coordinates
-    points_2d = []
-    for point_3d in obj.point_cloud:  # point_3d: (x_world, y_world, z_world)
-        x_world, y_world, z_world = point_3d
-
-        # Convert world coordinates to grid pixel coordinates
-        # Top-down projection (ignore z, project x,y to grid)
-        grid_x = int(np.round(
-            episode_pixel_origin[0] - y_world * pixels_per_meter
-        ))
-        grid_y = int(np.round(
-            episode_pixel_origin[1] + x_world * pixels_per_meter
-        ))
-
-        # Check bounds
-        if 0 <= grid_x < value_map_size and 0 <= grid_y < value_map_size:
-            points_2d.append((grid_x, grid_y))
-
-    # 8b. Update value map at each pixel the object occupies
-    for (grid_x, grid_y) in points_2d:
-        # Look up FOV-based confidence at this grid location
-        c_curr = confidence_mask_2d[grid_x, grid_y]
-
-        if c_curr <= 0:  # No confidence (outside FOV or occluded)
-            continue
-
-        # Get object's semantic score
-        v_curr = obj.current_score
-
-        # Get previous values at this location
-        v_prev = value_map._value_map[grid_x, grid_y, 0]  # Semantic channel
-        c_prev = value_map._map[grid_x, grid_y]           # Confidence channel
-
-        # Apply temporal fusion (VLFM formulas)
-        if c_prev > 0:  # Location was observed before
-            # Fuse semantic values (confidence-weighted average)
-            value_map._value_map[grid_x, grid_y, 0] = (
-                (c_curr * v_curr + c_prev * v_prev) / (c_curr + c_prev)
-            )
-
-            # Fuse confidence scores (biased toward higher confidence)
-            value_map._map[grid_x, grid_y] = (
-                (c_curr**2 + c_prev**2) / (c_curr + c_prev)
-            )
-        else:  # First time observing this location
-            value_map._value_map[grid_x, grid_y, 0] = v_curr
-            value_map._map[grid_x, grid_y] = c_curr
-
-# ──────────────────────────────────────────────────────────────────────────
-# STEP 9: Extract Frontiers (Reuse VLFM)
-# ──────────────────────────────────────────────────────────────────────────
-frontiers = obstacle_map.get_frontiers()
-# Returns: Nx2 array of (x, y) frontier locations in meters
-# Frontiers = boundary between explored and unexplored areas
-
-# ──────────────────────────────────────────────────────────────────────────
-# STEP 10: Score Frontiers Using Value Map (Reuse VLFM)
-# ──────────────────────────────────────────────────────────────────────────
-sorted_frontiers, sorted_scores = value_map.sort_waypoints(
-    frontiers,
-    radius=0.5  # Aggregate values within 0.5m radius
-)
-# This looks up value_map._value_map (SEMANTIC channel) at frontier locations
-# Returns frontiers sorted by descending semantic value
-
-# ──────────────────────────────────────────────────────────────────────────
-# STEP 11: Select Best Frontier (Reuse VLFM)
-# ──────────────────────────────────────────────────────────────────────────
-best_frontier = policy.get_best_frontier(
-    sorted_frontiers,
-    sorted_scores,
-    robot_xy=current_robot_position
-)
-# Applies:
-# - Stickiness (prefer previous frontier if score similar)
-# - Acyclicity (avoid oscillating between frontiers)
-# Returns: (x, y) coordinates of selected frontier
-
-# ──────────────────────────────────────────────────────────────────────────
-# STEP 12: Navigate to Frontier
-# ──────────────────────────────────────────────────────────────────────────
-navigate_to(best_frontier)
-```
-
+---
 
 ### Worked Example: Two Timesteps
 
@@ -1833,36 +1455,9 @@ Key Insight: The high-confidence center view (1.0) DOMINATED the
 
 ---
 
-## Pipeline Summary (High-Level Overview)
+## Part D: Comparison & Analysis
 
-### Complete Pipeline (5 Steps)
-
-**Step 1: Segmentation & Feature Extraction**
-- Use MobileSAM to segment objects → get masks
-- For each object: Extract 3 crops → HOV-SG weighted fusion → fused features
-- Project mask to 3D point cloud using depth
-
-**Step 2: Object Association & Map Update**
-- Compute semantic + geometric similarity with existing objects
-- Greedy matching: Merge if match found, create new object if not
-
-**Step 3: Score Visible Objects**
-- Get ALL visible objects in current FOV (not just new/updated!)
-- Score each: `object.score = cosine_similarity(object.features, target_embedding)`
-
-**Step 4: Project to Value Map**
-- Project each object's 3D point cloud → 2D grid coordinates
-- Look up FOV-based confidence at each location
-- Apply temporal fusion formulas (confidence-weighted averaging)
-
-**Step 5: Frontier Selection (Reuse VLFM)**
-- Extract frontiers → Score using semantic values → Select best
-
----
-
-## Section 6: Implementation Guide
-
-### Core Difference: VLFM vs Our Approach
+### 1. High-Level Comparison
 
 | Aspect | VLFM | Our Approach |
 |--------|------|--------------|
@@ -1870,6 +1465,32 @@ Key Insight: The high-confidence center view (1.0) DOMINATED the
 | **Scoring method** | BLIP2-ITM(full_image, text) | VLM(object_features, text) |
 | **Result** | Single score → broadcast to entire FOV | Per-object scores → project to specific locations |
 | **Representation** | Ephemeral (per-frame) | Persistent (3D object map) |
+
+### 2. Deep Dive: The Coordinate System Challenge
+
+**Why We Can't Use VLFM's "Rotation Method"**
+
+*   **VLFM's Shortcut**: Creates a 2D cone image, fills it with a *single* score (e.g., 0.8), and rotates the entire image. This works because the score is uniform across the FOV—rotating a uniform blob preserves the information.
+*   **Our Challenge (Granularity)**: We have multiple objects in the same FOV with *different* scores (e.g., Target=0.9, Obstacle=0.2). Rotating the image as a whole would lose the pixel-to-object correspondence.
+*   **Our Solution (Unprojection)**: We must track points through the full 3D pipeline:
+    1.  **Pixel (u,v)** → **Camera Frame** (Unproject using depth & intrinsics)
+    2.  **Camera Frame** → **World Frame** (Transform using camera pose)
+    3.  **World Frame** → **Grid** (Project to map)
+
+This ensures that the score for a specific object lands exactly on that object's map cells, regardless of the camera's orientation.
+
+### 3. Coordinate Systems Summary
+
+| Frame | Coordinates | Origin | Purpose |
+|-------|-------------|--------|---------|
+| **Pixel** | $(u, v)$ | Top-left of image | Original SAM Detection |
+| **Camera** | $(x_c, y_c, z_c)$ | Camera center | 3D shape relative to robot |
+| **World** | $(x_w, y_w, z_w)$ | Map origin (0,0) | Persistent global location |
+| **Grid** | $(row, col)$ | Map center (500,500) | Value Map storage |
+
+---
+
+## Section 6: Implementation Guide
 
 ### What You Need to Implement
 
@@ -2015,165 +1636,7 @@ def update_value_map_with_objects(value_map, visible_objects, depth, camera_pose
 
 **END OF IMPLEMENTATION GUIDE**
 
----
 
-## Appendix A: Common Confusion Points - Q&A
-
-### Q: "Why does VLFM do rotation/overlay differently than our approach? What's going on with the coordinates?"
-
-**A: The Simple Explanation**
-
-**VLFM has ONE score (e.g., 0.8) that applies to EVERYTHING in the FOV.**
-
-**You have DIFFERENT scores for DIFFERENT objects (bed=0.9, chair=0.2).**
-
-This fundamental difference means they can take shortcuts you can't.
-
----
-
-#### VLFM's Approach (Shortcut Works Because Uniform Score)
-
-```
-Step 1: Create a cone-shaped image (like a cone of vision)
-  - This cone is just a 2D image/mask
-  - It has confidence values (center=1.0, edges=0.0)
-  - It's like drawing a cone on paper
-
-Step 2: Rotate this ENTIRE cone image to match camera angle
-  - The whole cone rotates as one piece
-  - Like rotating a photo in Photoshop
-
-Step 3: Stamp/overlay this rotated cone onto the global map
-  - Place it at the camera's position
-  - Like placing a sticker on a poster
-
-Step 4: Fill the ENTIRE cone with score 0.8
-  - Every pixel inside the cone gets the same value
-```
-
-**Why this works for VLFM:** They only have ONE score, so they can treat the whole FOV as a single blob and move it around like a sticker.
-
----
-
-#### Your Approach (Must Track Individual Pixels)
-
-You **cannot** do the rotation trick because:
-- Bed pixels need score 0.9
-- Chair pixels need score 0.2
-- They're in DIFFERENT locations within the same FOV!
-
-So you must do this:
-
-```
-Step 1: For EACH pixel in the bed's mask:
-  - Take pixel (100, 200) with depth=3.5m
-  - Convert to 3D: "This pixel is 3.5m forward, 0.2m left in camera space"
-  - Transform to world: "In the world, this point is at (5.2, 3.1, 0.5)"
-  - Convert to grid: "On my top-down map, this is at grid position (480, 550)"
-  - Look up confidence at grid (480, 550) from VLFM's cone mask
-  - Assign bed's score 0.9 to grid (480, 550)
-
-Step 2: For EACH pixel in the chair's mask:
-  - Same process but assign chair's score 0.2
-```
-
----
-
-#### Why VLFM Can Rotate But You Can't
-
-**VLFM's situation:**
-```
-Cone image before rotation:
-    [0.5]
-  [0.8 1.0 0.8]
-    [0.5]
-
-Rotate entire image by 45°:
-    [0.5]
-  [0.8 1.0 0.8]  ← Whole thing rotates together
-    [0.5]
-
-Every pixel gets filled with: 0.8 (same score everywhere)
-```
-
-**Your situation:**
-```
-FOV contains:
-  - Bed pixels → need score 0.9
-  - Chair pixels → need score 0.2
-
-If you rotate the whole FOV as an image:
-  - Which pixels should get 0.9?
-  - Which should get 0.2?
-  - You CAN'T tell anymore after rotation!
-```
-
-**The problem:** After rotating an image, you lose track of which pixel belonged to which object. So you need to:
-1. First convert each object's pixels to 3D world coordinates (where rotation is already baked into the transformation)
-2. Then project those specific world coordinates to the grid
-3. Then assign that object's specific score
-
----
-
-#### The Confidence Mask Part (This Is What's Confusing)
-
-**You DO still use VLFM's rotated confidence cone!** Here's how:
-
-```python
-# VLFM creates and rotates the confidence cone for you
-confidence_mask = value_map._localize_new_data(depth, camera_pose, ...)
-# This gives you a (1000, 1000) grid where:
-# - 1.0 at center of current FOV
-# - 0.0 at edges/outside FOV
-# - Already rotated and positioned correctly!
-
-# Then YOU do your own projection:
-for bed_pixel in bed_mask:
-    # Convert bed pixel to world coordinates
-    world_point = camera_pose @ camera_pixel_to_3d(bed_pixel)
-
-    # Convert world to grid
-    grid_x, grid_y = world_to_grid(world_point)
-
-    # Look up confidence from VLFM's cone
-    confidence = confidence_mask[grid_x, grid_y]  # ← Use VLFM's rotated cone!
-
-    # Apply bed's score with this confidence
-    update_value_map(grid_x, grid_y, score=0.9, confidence=confidence)
-```
-
----
-
-#### Summary Table
-
-**VLFM:**
-- "I have one score for everything"
-- "I'll create a cone, rotate it, place it, fill it all with one score"
-- **Works because: uniform score everywhere**
-
-**You:**
-- "I have different scores for different objects"
-- "I can't rotate everything together - I'll lose track of what's what"
-- "I'll convert each object's pixels to world coordinates (rotation handled by math)"
-- "Then project to grid and assign that object's specific score"
-- "But I'll still REUSE VLFM's confidence cone to look up confidence values"
-
----
-
-#### What You Reuse vs What You Implement
-
-**Reuse from VLFM:**
-- ✅ Confidence cone creation (they rotate it for you, you just look up values from it)
-
-**Implement yourself:**
-- ❌ Per-pixel projection: depth pixel → 3D camera → 3D world → 2D grid
-- ❌ Assigning different scores to different grid locations
-
-**The rotation is still there!** It's just:
-- VLFM: Rotates the cone as an image, then fills with uniform score
-- You: Rotation is baked into the `camera_pose` transformation matrix, applied per-pixel
-
----
 
 ## Appendix B: ConceptGraphs 2D-to-3D Projection Pipeline
 
@@ -2400,151 +1863,28 @@ For each point p_camera = [x, y, z, 1]:
 **Function:** `gobs_to_detection_list()`
 **Location:** `concept-graphs/conceptgraph/slam/utils.py` (lines 478-572)
 
-**Full Workflow:**
-```python
-def gobs_to_detection_list(cfg, image, depth_array, cam_K, idx, gobs, trans_pose=None):
-    """
-    Convert 2D segmentation masks to 3D detection objects.
+### Complete Pipeline Integration
 
-    Flow: Masks → Camera PCDs → Map PCDs → Filtered Objects
-    """
+**Function:** `gobs_to_detection_list()`
 
-    # Prepare: Filter and resize masks
-    gobs = resize_gobs(gobs, image)
-    gobs = filter_gobs(cfg, gobs, image, BG_CLASSES)
-
-    fg_detection_list = DetectionList()
-    n_masks = len(gobs['xyxy'])
-
-    for mask_idx in range(n_masks):
-        # Extract current mask and metadata
-        mask = gobs['mask'][mask_idx]
-        class_name = gobs['classes'][gobs['class_id'][mask_idx]]
-
-        # ── Stage 1: Depth to 3D (Camera Frame) ──
-        camera_object_pcd = create_object_pcd(
-            depth_array, mask, cam_K, image, obj_color=None
-        )
-
-        # Filter: Minimum point threshold
-        if len(camera_object_pcd.points) < max(cfg.min_points_threshold, 5):
-            continue
-
-        # ── Stage 4: Transform to Map Frame ──
-        if trans_pose is not None:
-            global_object_pcd = camera_object_pcd.transform(trans_pose)
-        else:
-            global_object_pcd = camera_object_pcd
-
-        # ── Stage 2 & 3: Denoise + Downsample ──
-        global_object_pcd = process_pcd(global_object_pcd, cfg)
-
-        # Compute bounding box
-        pcd_bbox = get_bounding_box(cfg, global_object_pcd)
-        pcd_bbox.color = [0, 1, 0]
-
-        # Filter: Bounding box volume threshold
-        if pcd_bbox.volume() < 1e-6:
-            continue
-
-        # Create detection object with all metadata
-        detected_object = {
-            'image_idx': [idx],
-            'mask_idx': [mask_idx],
-            'class_name': [class_name],
-            'mask': [mask],
-            'xyxy': [gobs['xyxy'][mask_idx]],
-            'conf': [gobs['confidence'][mask_idx]],
-            'n_points': [len(global_object_pcd.points)],
-            'pixel_area': [mask.sum()],
-
-            # 3D Geometry
-            'pcd': global_object_pcd,      # Point cloud in map frame
-            'bbox': pcd_bbox,              # 3D bounding box
-
-            # Features (from CLIP/DINO)
-            'clip_ft': to_tensor(gobs['image_feats'][mask_idx]),
-            'text_ft': to_tensor(gobs['text_feats'][mask_idx]),
-        }
-
-        fg_detection_list.append(detected_object)
-
-    return fg_detection_list
-```
-
----
-
-### Configuration Parameters
-
-**Typical ConceptGraphs Config:**
-```python
-# Mask filtering
-mask_area_threshold: 100          # Minimum pixel area
-max_bbox_area_ratio: 0.5          # Maximum bbox area vs image
-
-# Point cloud thresholds
-min_points_threshold: 50          # Minimum 3D points required
-
-# Downsampling
-downsample_voxel_size: 0.01       # 1cm voxel grid
-
-# DBSCAN denoising
-dbscan_remove_noise: true         # Enable DBSCAN
-dbscan_eps: 0.02                  # 2cm neighborhood radius
-dbscan_min_points: 10             # Minimum cluster size
-```
-
----
-
-### HOV-SG Alternative Implementation
-
-**Location:** `HOV-SG/hovsg/dataloader/generic.py`
-
-**Key Difference:** Uses KD-Tree approach for refinement.
-
-```python
-def create_3d_masks(self, masks, depth, full_pcd, full_pcd_tree, camera_pose):
-    """
-    HOV-SG variant: Match projected points to full scene PCD using KD-Tree.
-    """
-    pcd_list = []
-    pcd_points = np.asarray(full_pcd.points)
-
-    for mask in masks:
-        # Step 1: Standard depth unprojection
-        pcd_masked = self.create_pcd(mask, depth, camera_pose, mask_img=True)
-        pcd_masked_pts = np.asarray(pcd_masked.points)
-
-        # Step 2: Refine using KD-Tree nearest neighbor search
-        dist, indices = full_pcd_tree.query(pcd_masked_pts, k=1)
-        pcd_masked_pts = pcd_points[indices]
-
-        # Step 3: Create refined PCD
-        pcd_mask = o3d.geometry.PointCloud()
-        pcd_mask.points = o3d.utility.Vector3dVector(pcd_masked_pts)
-        pcd_mask.colors = o3d.utility.Vector3dVector(colors[indices])
-
-        # Step 4: Downsample
-        pcd_mask = pcd_mask.voxel_down_sample(voxel_size=0.02)
-
-        pcd_list.append(pcd_mask)
-
-    return pcd_list
-```
-
-**Advantage:** Ensures masked points align exactly with reconstructed scene geometry.
+This functionality will be replaced by our custom `ObjectDetector` class which orchestrates:
+1. SAM Segmentation
+2. Feature Extraction (SigLIP/ImageBind)
+3. 3D Point Cloud Creation (Camera Frame)
+4. Transformation to Map Frame
+5. Point Cloud Downsampling & Denoising (DBSCAN)
 
 ---
 
 ### Summary Table
 
-| Stage | Function | Input | Output | Purpose |
-|-------|----------|-------|--------|---------|
-| 1 | `create_object_pcd()` | Mask + Depth + K | Camera frame PCD | Depth unprojection |
-| 2 | `pcd_denoise_dbscan()` | Noisy PCD | Denoised PCD | Remove outliers (DBSCAN) |
-| 3 | `voxel_down_sample()` | Dense PCD | Sparse PCD | Reduce density |
-| 4 | `.transform()` | Camera PCD + Pose | Map frame PCD | Coordinate transformation |
-| Final | `gobs_to_detection_list()` | Masks + Depth + Pose | Detection objects | Full integration |
+| Stage | Function | Usage |
+|-------|----------|-------|
+| 1 | `create_object_pcd()` | Depth unprojection to Camera Frame PCD |
+| 2 | `transform` | Convert Camera Frame PCD to World/Map Frame |
+| 3 | `pcd_denoise_dbscan()` | Remove outliers and noise |
+| 4 | `voxel_down_sample()` | Reduce point density for efficiency |
+| 5 | Object Creation | Combine PCD, features, and score into Object |
 
 ---
 
@@ -2558,10 +1898,6 @@ def create_3d_masks(self, masks, depth, full_pcd, full_pcd_tree, camera_pose):
 
 3. **Geometry Math:**
    - `concept-graphs/conceptgraph/utils/geometry.py`
-
-4. **HOV-SG Alternative:**
-   - `HOV-SG/hovsg/dataloader/generic.py` (lines 86-168)
-   - `HOV-SG/hovsg/utils/graph_utils.py` (lines 429-477)
 
 ---
 
@@ -2677,4 +2013,48 @@ Without world frame → map thinks there are 2 chairs
 With world frame → correctly recognizes it's the same chair
 
 This is why we transform from camera → world using the `camera_pose` matrix.
+
+---
+
+## Appendix E: VLFM Directory Analysis
+
+### What We Use vs. Skip vs. Modify
+
+| Directory | Purpose | Usage Plan | Notes |
+|-----------|---------|------------|-------|
+| **mapping/** | Value map, obstacle map, frontier detection | **USE AS-IS** | Core infrastructure. We use `ValueMap` to score frontiers and `ObstacleMap` to extract frontiers. |
+| **policy/** | Navigation policies | **MODIFY** | We will create a new `ObjectCentricPolicy` here that inherits from `BaseObjectNavPolicy`. |
+| **vlm/** | Vision-language models | **KEEP RELEVANT** | We retain `grounding_dino.py`, `yolo_world.py`, and `blip2.py` as they are used by the base infrastructure for initialization and termination conditions. We REPLACE the scoring mechanism (BLIP2-ITM) with our new object-centric scoring. |
+| **utils/** | Geometry & utilities | **USE AS-IS** | Robust geometry utilities. |
+| **obs_transformers/** | Preprocessing | **USE AS-IS** | Handles RGB-D resizing/normalization. |
+
+### How GroundingDINO is Used (We Keep This)
+
+In the original VLFM and our implementation, GroundingDINO is used by `BaseObjectNavPolicy` to:
+1.  **Initialize the detector**: `_get_object_detections()` uses GroundingDINO to check if the target object is visible (for stopping logic).
+2.  **Termination Condition**: The policy stops when the target object is confidently detected and the robot is close enough.
+
+**Crucial Distinction**:
+*   **VLFM**: Uses GroundingDINO for target detection (stopping) AND BLIP2-ITM for frontier scoring (exploration).
+*   **Our Approach**: We **KEEP** GroundingDINO for target detection (stopping) but **REPLACE** BLIP2-ITM with our Object-Centric Scoring (SigLIP/ImageBind) for frontier scoring (exploration).
+
+Therefore, we do NOT empty the `vlm/` folder. We keep the files required by `BaseObjectNavPolicy` but implement our own scoring module in `vlfm/object_centric/`.
+
+### Directory Structure Plan
+
+```
+vlfm/
+├── policy/
+│   ├── base_objectnav_policy.py  # Keep (we inherit from this)
+│   ├── itm_policy.py             # Reference (we replace this)
+│   └── object_centric_policy.py  # [NEW] Our policy
+├── object_centric/               # [NEW] Our modules
+│   ├── object_detection.py       # Stage 1: Detection pipeline
+│   ├── object_map.py             # Stage 2: Association & Mapping
+│   ├── siglip2.py                # VLM Client
+│   └── sam_detector.py           # SAM Client
+├── mapping/                      # Use as-is
+├── vlm/                          # Keep GroundingDINO/YOLO/BLIP2
+└── utils/                        # Use as-is
+```
 

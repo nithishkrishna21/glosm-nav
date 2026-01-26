@@ -36,6 +36,7 @@ class MapObject:
         confidence: float,
         object_id: int
     ):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.object_id = object_id
         self.point_cloud = point_cloud
         self.features = features
@@ -45,6 +46,7 @@ class MapObject:
 
         # Compute 3D bounding box
         self.bbox_3d = self._compute_bbox_3d(point_cloud)
+        
 
     def _compute_bbox_3d(self, pcd: o3d.geometry.PointCloud) -> torch.Tensor:
         """
@@ -60,7 +62,7 @@ class MapObject:
         # get the box points
         v = np.asarray(v.get_box_points())
         # return as tensor
-        return torch.from_numpy(v).float()
+        return torch.from_numpy(v).float().to(self.device)
     
     def _downsample_voxel(
         self,
@@ -89,7 +91,7 @@ class MapObject:
         # update the semantic features
         self.features = (self.num_detections * self.features + detection.features) / (self.num_detections + 1)
         # normalize the features
-        self.features = F.normalize(self.features, dim=-1)
+        self.features = F.normalize(self.features, dim=-1).float().to(self.device)
 
         # update the confidence
         self.confidence = (self.num_detections * self.confidence + detection.confidence) / (self.num_detections + 1)
@@ -115,6 +117,7 @@ class ObjectMap:
         nn_distance_threshold: float = 0.02,    # Distance threshold for nnratio (meters)
         max_objects: int = 100                  # Maximum objects to track
     ):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.objects: List[MapObject] = []
         self.similarity_threshold = similarity_threshold
         self.geometric_sim_type = geometric_sim_type
@@ -189,25 +192,25 @@ class ObjectMap:
     def _compute_iou_similarities(
         self,
         detections: List[Detection]
-    ) -> np.ndarray:
+    ) -> torch.Tensor:
         """
         Compute (M×N) geometric similarity matrix using 3D bbox IoU.
 
         Args:
             detections: List of M detections
 
-        Returns: (M, N) numpy array of IoU scores [0, 1]
+        Returns: (M, N) torch tensor of IoU scores [0, 1]
         """
 
         # Compute bboxes for detections
         dec_bbox = [compute_3d_bbox_from_points(d.point_cloud) for d in detections]
-        dec_bbox = torch.stack(dec_bbox, dim=0)  # (M, 8, 3)
+        dec_bbox = torch.stack(dec_bbox, dim=0).to(self.device)  # (M, 8, 3)
 
-        obj_bbox = torch.stack([obj.bbox_3d for obj in self.objects], dim=0)  # (N, 8, 3)
+        obj_bbox = torch.stack([obj.bbox_3d for obj in self.objects], dim=0).to(self.device)  # (N, 8, 3)
 
         # Compute IoU matrix
         iou_matrix = compute_3d_iou_batch(dec_bbox, obj_bbox) # (M, N)
-        iou_matrix = iou_matrix.float()
+        iou_matrix = iou_matrix.float().to(self.device)
 
         return iou_matrix
     
@@ -270,7 +273,7 @@ class ObjectMap:
                 # Compute ratio
                 overlap_matrix[i, j] = overlap_count / num_det_points
 
-        return torch.from_numpy(overlap_matrix).float()
+        return torch.from_numpy(overlap_matrix).float().to(self.device)
     
 
     def _compute_semantic_similarities(
@@ -289,17 +292,18 @@ class ObjectMap:
         Returns: (M, N) torch tensor of cosine similarities [-1, 1]
         """
         # Stack detection features into (M, D) tensor
-        det_features = torch.stack([d.features for d in detections], dim=0)  # (M, D)
+        det_features = torch.stack([d.features for d in detections], dim=0).to(self.device)  # (M, D)
 
         # Stack object features into (N, D) tensor
-        obj_features = torch.stack([obj.features for obj in self.objects], dim=0)  # (N, D)
+        obj_features = torch.stack([obj.features for obj in self.objects], dim=0).to(self.device)  # (N, D)
 
         det_features = det_features.unsqueeze(-1)  # (M, D, 1)
         obj_features = obj_features.T.unsqueeze(0)  # (1, D, N)
 
         visual_sim = F.cosine_similarity(det_features, obj_features, dim=1)  # (M, N)
+        visual_sim = visual_sim.float().to(self.device)
 
-        return visual_sim.float()
+        return visual_sim
 
     def _aggregate_similarities(
         self,
@@ -317,7 +321,7 @@ class ObjectMap:
         """
 
         sims = geometric_sim + semantic_sim  # Element-wise addition
-        sims = sims.float()
+        sims = sims.float().to(self.device)
 
         return sims
 

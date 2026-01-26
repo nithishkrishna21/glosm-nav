@@ -75,32 +75,38 @@ class SigLIP:
 
     def compute_similarity(
         self,
-        image_features: np.ndarray,
-        text_features: np.ndarray
+        image_features: torch.Tensor,
+        text_features: torch.Tensor
     ) -> float:
         """
         Compute cosine similarity between image and text features.
 
         Args:
-            image_features: np.ndarray of shape (1, output_dim) normalized image features
-            text_features: np.ndarray of shape (1, output_dim) normalized text features
+            image_features: torch.Tensor of shape (1, output_dim) normalized image features
+            text_features: torch.Tensor of shape (1, output_dim) normalized text features
 
         Returns:
             float: Cosine similarity
         """
 
-        dot_product = np.dot(image_features, text_features)
-        norm_img = np.linalg.norm(image_features)
-        norm_text = np.linalg.norm(text_features)
+        # dot_product = np.dot(image_features, text_features)
+        # norm_img = np.linalg.norm(image_features)
+        # norm_text = np.linalg.norm(text_features)
 
-        similarity = dot_product / (norm_img * norm_text + 1e-8)
+        # similarity = dot_product / (norm_img * norm_text + 1e-8)
+
+        similarity = torch.nn.functional.cosine_similarity(image_features, text_features, dim = -1)
 
         return float(similarity.squeeze())
         
 
 class SigLIPClient:
-    def __init__(self, port: int = 12184):
+    def __init__(self, port: int = 12184, device = None):
         self.url = f"http://localhost:{port}/siglip"
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = device
 
     def encode_image(self, image: np.ndarray) -> np.ndarray:
         """
@@ -113,7 +119,8 @@ class SigLIPClient:
                                 request_type = "encode_image",
                                 image = image)
 
-        return np.array(response["image_features"], dtype=np.float32)
+        # return np.array(response["image_features"], dtype=np.float32)
+        return torch.Tensor(response["image_features"]).float().to(self.device)
 
     def encode_text(self, text: str) -> np.ndarray:
         """
@@ -125,12 +132,13 @@ class SigLIPClient:
                                 request_type = "encode_text",
                                 text = text)
 
-        return np.array(response["text_features"], dtype=np.float32)
+        # return np.array(response["text_features"], dtype=np.float32)
+        return torch.Tensor(response["text_features"]).float().to(self.device)
 
     def compute_similarity(
         self,
-        image_features: np.ndarray,
-        text_features: np.ndarray
+        image_features: torch.Tensor,
+        text_features: torch.Tensor
     ) -> float:
         """
         Compute similarity via server.
@@ -187,8 +195,11 @@ if __name__ == "__main__":
         
             elif request_type == "compute_similarity":
                 
-                image_features = np.array(payload["image_features"])
-                text_features = np.array(payload["text_features"])
+                # image_features = np.array(payload["image_features"])
+                # text_features = np.array(payload["text_features"])
+                image_features = torch.Tensor(payload["image_features"]).float().to(self.device)
+                text_features = torch.Tensor(payload["text_features"]).float().to(self.device)
+                
                 similarity = self.compute_similarity(image_features, text_features)
                 response = {
                     "similarity": similarity

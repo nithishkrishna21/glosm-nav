@@ -87,6 +87,7 @@ class ObjectDetector:
         self.min_points = min_points
         self.bbox_margin = bbox_margin
         self.masked_weight = masked_weight
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
     def detect_objects(
@@ -114,7 +115,7 @@ class ObjectDetector:
 
         # Discard low-confidence masks 
         masks = [m for m in masks if m['predicted_iou'] > 0.88
-                 and m['stability_score'] > 0.95
+                 and m['stability_score'] > 0.8
                  and m['area'] < (0.5 * rgb.shape[0] * rgb.shape[1])]
 
 
@@ -293,9 +294,9 @@ class ObjectDetector:
 
     def _fuse_features(
         self,
-        F_g: np.ndarray,      # (1, D)
-        cropped_feats: np.ndarray,        # (1, D) - "unmasked" in HOV-SG
-        cropped_masked_feats: np.ndarray  # (1, D) - "masked" in HOV-SG
+        F_g: torch.Tensor,      # (1, D)
+        cropped_feats: torch.Tensor,        # (1, D) - "unmasked" in HOV-SG
+        cropped_masked_feats: torch.Tensor  # (1, D) - "masked" in HOV-SG
     ) -> torch.Tensor:
         """
         Perform HOV-SG 2-stage weighted fusion.
@@ -303,9 +304,9 @@ class ObjectDetector:
         Returns: (1, D) fused feature vector
         """
 
-        F_g = torch.from_numpy(F_g).float()
-        cropped_feats = torch.from_numpy(cropped_feats).float()
-        cropped_masked_feats = torch.from_numpy(cropped_masked_feats).float()
+        # F_g = torch.from_numpy(F_g).float()
+        # cropped_feats = torch.from_numpy(cropped_feats).float()
+        # cropped_masked_feats = torch.from_numpy(cropped_masked_feats).float()
 
         fused_crop_feats = self.masked_weight * cropped_masked_feats + (1- self.masked_weight) * cropped_feats    
 
@@ -314,14 +315,14 @@ class ObjectDetector:
         # 1. Compute the cosine similarity between the local feature F_l and global feature F_g
         cos = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
         phi_l_G = cos(F_l, F_g)
-        w_i = torch.nn.functional.softmax(phi_l_G, dim=0).reshape(-1, 1)
+        w_i = torch.sigmoid(phi_l_G).reshape(-1, 1)
 
         # 2. Compute the final fused feature F_fused
         F_fused = w_i * F_g + (1 - w_i) * F_l
         F_fused = torch.nn.functional.normalize(F_fused, p=2, dim=-1)
         # F_fused = F_fused.cpu().numpy()
 
-        return F_fused.float()
+        return F_fused.float().to(self.device)
 
     def _depth_to_pointcloud(
         self,
