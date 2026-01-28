@@ -49,7 +49,7 @@ class Detection:
         self.confidence = confidence
 
 
-class ObjectDetector:
+class ObjectSegmenter:
     """
     Handles object detection pipeline for a single frame.
 

@@ -30,7 +30,7 @@ from vlfm.mapping.value_map import ValueMap
 from vlfm.policy.utils.acyclic_enforcer import AcyclicEnforcer
 
 # Our object-centric modules (Stage 1 & 2)
-from vlfm.object_centric.object_detection import ObjectDetector
+from vlfm.object_centric.object_detection import ObjectSegmenter
 from vlfm.object_centric.object_map import ObjectMap, MapObject
 from vlfm.object_centric.sam_detector import MobileSAMClient
 from vlfm.object_centric.siglip2 import SigLIPClient
@@ -60,7 +60,7 @@ class ObjectCentricPolicy(HabitatMixin, BaseITMPolicy):
         self.mobile_sam_client = MobileSAMClient()
         self.siglip_client = SigLIPClient()
 
-        self.object_detector = ObjectDetector(
+        self.object_segmenter = ObjectSegmenter(
             sam_detector=self.mobile_sam_client,
             siglip=self.siglip_client,
             camera_intrinsics=camera_intrinsics,
@@ -129,13 +129,13 @@ class ObjectCentricPolicy(HabitatMixin, BaseITMPolicy):
         rgb, depth, camera_pose, min_depth, max_depth, fov = self._observations_cache["value_map_rgbd"][0]
 
         # Step 2: Detect objects in current frame
-        detections = self._object_detector.detect_objects(rgb, depth, camera_pose)
+        detections = self.object_segmenter.detect_objects(rgb, depth, camera_pose)
 
         # Step 3: Update object map
-        self._object_map.update(detections)
+        self.object_map.update(detections)
 
         # Step 4: Get visible objects and compute scores
-        visible_objects = self._object_map.get_visible_objects()
+        visible_objects = self.object_map.get_visible_objects()
         scores = self.compute_object_target_similarity(visible_objects, self.target_text_features)
 
         # Step 5: Update value map
