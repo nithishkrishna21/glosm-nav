@@ -142,7 +142,68 @@ class ValueMap(BaseMap):
             }
             with open(JSON_PATH, "w") as f:
                 json.dump(data, f)
+    
+    def update_map_object_wise(
+        self,
+        visible_objects: List[Any],  # Type: List[MapObject]
+        scores: np.ndarray,
+        depth: np.ndarray,
+        tf_camera_to_episodic: np.ndarray,
+        min_depth: float,
+        max_depth: float,
+        fov: float,
+    ) -> None:
+        """
+        Updates the value map using object-centric scores.
 
+        Args:
+            visible_objects: List of MapObject instances that are currently visible.
+            scores: Array of scores for each visible object.
+            depth: Depth image for occlusion handling.
+            tf_camera_to_episodic: Camera pose.
+            min_depth, max_depth: Depth range params.
+            fov: Field of view in radians.
+        """
+        
+        # Get the confidence mask
+        temp_confidence_map = self._localize_new_data(depth, tf_camera_to_episodic, min_depth, max_depth, fov)
+
+        # Obtain a temp_value_map
+        temp_value_map = np.zeros_like(self._value_map)
+
+        H, W = self._value_map.shape[:2]
+
+        # Update the temp_value_map with visible object scores
+        for obj, score in zip(visible_objects, scores):
+            points_2d = np.asarray(obj.point_cloud.points)[:, :2]
+            px = self._xy_to_px(points_2d)
+
+            valid_mask = (px[:, 0] >= 0) & (px[:, 0] < H) & (px[:, 1] >= 0) & (px[:, 1] < W)
+
+            valid_px = px[valid_mask]
+
+            if len(valid_px) > 0:
+                temp_value_map[valid_px[:, 0], valid_px[:, 1]] = score
+
+        # Fuse the temp_value_map with the existing value map
+        self._fuse_object_data(temp_confidence_map, temp_value_map)   
+
+        if RECORDING:
+            idx = len(glob.glob(osp.join(RECORDING_DIR, "*.png")))
+            img_path = osp.join(RECORDING_DIR, f"{idx:04d}.png")
+            cv2.imwrite(img_path, (depth * 255).astype(np.uint8))
+            with open(JSON_PATH, "r") as f:
+                data = json.load(f)
+            data[img_path] = {
+                "scores": scores.tolist(),
+                "tf_camera_to_episodic": tf_camera_to_episodic.tolist(),
+                "min_depth": min_depth,
+                "max_depth": max_depth,
+                "fov": fov,
+            }
+            with open(JSON_PATH, "w") as f:
+                json.dump(data, f)         
+    
     def sort_waypoints(
         self, waypoints: np.ndarray, radius: float, reduce_fn: Optional[Callable] = None
     ) -> Tuple[np.ndarray, List[float]]:
@@ -222,8 +283,7 @@ class ValueMap(BaseMap):
         """Using the FOV and depth, return the visible portion of the FOV.
 
         Args:
-            depth: The depth image to use for determining the visible portion of the
-                FOV.
+            depth: The depth image to use for determining the visible portion of the FOV.
         Returns:
             A mask of the visible portion of the FOV.
         """
@@ -428,6 +488,70 @@ class ValueMap(BaseMap):
             self._value_map = np.nan_to_num(self._value_map)
             self._map = np.nan_to_num(self._map)
 
+    def _fuse_object_data(self, temp_confidence_map: np.ndarray, temp_value_map: np.ndarray) -> None:
+        """
+        Fuses the temporary object value map into the persistent value map.
+
+        Args:
+            temp_confidence_map: (H, W) array with confidence scores (0.0 to 1.0).
+            temp_value_map: (H, W, 1) array with object semantic scores (painted objects).
+        """
+
+        if self._obstacle_map is not None:  
+            
+            # If an obstacle map is provided, we will use it to mask out the
+            # new map
+            explored_area = self._obstacle_map.explored_area
+            temp_confidence_map[explored_area == 0] = 0
+            self._map[explored_area == 0] = 0
+            self._value_map[explored_area == 0] *= 0
+
+        if self._fusion_type == "replace":
+
+            # The values from the current observation will overwrite any existing values
+            self._map[temp_confidence_map > 0] = temp_confidence_map[temp_confidence_map > 0]
+            self._value_map[temp_confidence_map > 0] = temp_value_map[temp_confidence_map > 0]
+            return
+        
+        elif self._fusion_type == "equal_weighting":
+            # The updated values will always be the mean of the current and new values, 
+            # meaning that confidence scores are forced to be the same
+            self._map[self._map > 0] = 1
+            temp_confidence_map[temp_confidence_map > 0] = 1
+
+        else:
+            assert self._fusion_type == "default", f"Unknown fusion type {self._fusion_type}"
+
+        # Any values in the given map that are less confident than
+        # self._decision_threshold AND less than the new confidence map in the existing map
+        # will be turned to 0's
+        less_confidence_mask = np.logical_and(temp_confidence_map < self._decision_threshold, temp_confidence_map < self._map)
+        temp_confidence_map[less_confidence_mask] = 0
+
+        if self._use_max_confidence:
+            # For every pixel that has a higher new_map in the new map than the
+            # existing value map, replace the value in the existing value map with
+            # the new value
+            higher_confidence_mask = temp_confidence_map > self._map
+            self._value_map[higher_confidence_mask] = temp_value_map[higher_confidence_mask]
+            self._map[higher_confidence_mask] = temp_confidence_map[higher_confidence_mask]
+
+        else:
+            
+            confidence_denominator = self._map + temp_confidence_map
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                weight_1 = self._map / confidence_denominator
+                weight_2 = temp_confidence_map / confidence_denominator
+
+            weight_1_channeled = np.expand_dims(weight_1, axis=2) # (H, W) -> (H, W, 1)
+            weight_2_channeled = np.expand_dims(weight_2, axis=2) # (H, W) -> (H, W, 1)
+
+            self._value_map = self._value_map * weight_1_channeled + temp_value_map * weight_2_channeled
+            self._map = self._map * weight_1 + temp_confidence_map * weight_2
+
+            self._value_map = np.nan_to_num(self._value_map)
+            self._map = np.nan_to_num(self._map)
 
 def remap(value: float, from_low: float, from_high: float, to_low: float, to_high: float) -> float:
     """Maps a value from one range to another.

@@ -33,9 +33,11 @@ from vlfm.object_centric.object_detection import ObjectDetector
 from vlfm.object_centric.object_map import ObjectMap, MapObject
 from vlfm.object_centric.sam_detector import MobileSAMClient
 from vlfm.object_centric.siglip2 import SigLIPClient
+from habitat_baselines.common.baseline_registry import baseline_registry
 
 
-class ObjectCentricPolicy(BaseITMPolicy):
+@baseline_registry.register_policy
+class ObjectCentricPolicy(HabitatMixin, BaseITMPolicy):
     """
     Object-centric navigation policy.
 
@@ -43,9 +45,6 @@ class ObjectCentricPolicy(BaseITMPolicy):
         - Frontier selection logic (_get_best_frontier)
         - Value map infrastructure
         - Obstacle map and navigation
-
-    Overrides:
-        - _update_value_map(): Use object-centric scoring instead of whole-image scoring
     """
 
     def __init__(
@@ -91,7 +90,16 @@ class ObjectCentricPolicy(BaseITMPolicy):
         self.object_map.reset()
         self._value_map.reset()
         self._acyclic_enforcer = AcyclicEnforcer()
-        
+
+    def _initialize(self) -> Tensor:
+        return super()._initialize()
+
+    def _get_policy_info(self) -> Dict[str, Any]:
+        return super()._get_policy_info()
+
+    # _cache_observations the super method is used
+
+    # for _act, the implementation of ITMPolicyV2 is used here
     def act(
         self,
         observations: Dict,
@@ -100,61 +108,21 @@ class ObjectCentricPolicy(BaseITMPolicy):
         masks: Tensor,
         deterministic: bool = False,
     ) -> Any:
-        """
-        Main decision loop.
-        
-        1. Pre-step bookkeeping (from BaseObjectNavPolicy)
-        2. Update Value Map with object scores (CRITICAL step)
-        3. Decide action (initialize -> explore -> navigate)
-        """
+
         self._pre_step(observations, masks)
         
-        if self._visualize:
-            self._update_value_map()
+        # if self._visualize:
+        #     self._update_value_map()
+
+        self._update_value_map()
             
         return super().act(observations, rnn_hidden_states, prev_actions, masks, deterministic)
 
-    def _initialize(self) -> Tensor:
-        """
-        Turn around 360 degrees to populate the map.
-        
-        TODO: Implement spin behavior.
-        - Create a sequence of turn actions (e.g., 12 turns of 30 degrees).
-        - Return the next action in the sequence.
-        - Mark self._done_initializing = True when complete.
-        """
-        raise NotImplementedError("Implement spin behavior here")
-
-    def _explore(self, observations: Union[Dict[str, Tensor], "TensorDict"]) -> Tensor:
-        """
-        Select the best frontier to explore.
-        
-        TODO: Implement frontier selection.
-        1. Get frontiers from self._observations_cache["frontier_sensor"]
-        2. If no frontiers, return STOP action.
-        3. Sort frontiers by value (using self._sort_frontiers_by_value)
-        4. Use self._acyclic_enforcer to select best non-cyclic frontier
-        5. Return pointnav action to that frontier
-        """
-        raise NotImplementedError("Implement frontier exploration logic here")
-
+    # custome logic, needs to be overwritten
     def _update_value_map(self) -> None:
         """
         Update value map with object-centric scores.
 
-        This is the KEY method that differs from ITMPolicy.
-
-        ITMPolicy does:
-            score = BLIP2ITM.cosine(whole_image, text)
-            value_map.update(score, depth, pose, ...)
-
-        We need to:
-            1. Get RGB-D from self._observations_cache["value_map_rgbd"]
-            2. Run object detection → List[Detection]
-            3. Update object map with detections
-            4. Get visible objects
-            5. Score each object against target text
-            6. Project scores onto value map
         """
         # Step 1: Get observations
         rgb, depth, camera_pose, min_depth, max_depth, fov = self._observations_cache["value_map_rgbd"][0]
@@ -169,24 +137,18 @@ class ObjectCentricPolicy(BaseITMPolicy):
         visible_objects = self._object_map.get_visible_objects()
         scores = self.compute_object_target_similarity(visible_objects, self.target_text_features)
 
-        # ══════════════════════════════════════════════════════════════
-        # Step 5: Project to value map
-        # For now (simplified): use max score among visible objects
-        # Later (proper): project each object's point cloud separately
-        #
-        # self._value_map.update_map(score, depth, tf, min_depth, max_depth, fov)
-        # ══════════════════════════════════════════════════════════════
+        # Step 5: Update value map
+        self._value_map.update_map_object_wise(visible_objects, scores, depth, 
+        camera_pose, min_depth, max_depth, fov)
 
-
-        # ══════════════════════════════════════════════════════════════
         # Step 6: Update agent trajectory
-        # self._value_map.update_agent_traj(
-        #     self._observations_cache["robot_xy"],
-        #     self._observations_cache["robot_heading"]
-        # )
-        # ══════════════════════════════════════════════════════════════
-        pass
+        self._value_map.update_agent_traj(
+            self._observations_cache["robot_xy"],
+            self._observations_cache["robot_heading"]
+        )
 
+    # originally the logic of ITMPolicyV2 is used here, 
+    # but since we inherit BaseITMPolicy, we need to overwrite this method
     def _sort_frontiers_by_value(
         self,
         observations: Any,
@@ -200,22 +162,22 @@ class ObjectCentricPolicy(BaseITMPolicy):
         sorted_frontiers, sorted_values = self._value_map.sort_waypoints(frontiers, 0.5)
         return sorted_frontiers, sorted_values
 
-    
+    # new logic
     def compute_object_target_similarity(
         self, 
         visible_objects: List[MapObject], 
-        target_text_feats: np.ndarray
-    ) -> torch.Tensor:
+        target_text_feats: torch.Tensor
+    ) -> np.ndarray:
         """
         Compute similarity between visible objects and target text.
         """
 
         if not visible_objects:
-            return torch.Tensor([])
+            return np.array([])
         
         object_feats = torch.stack([obj.features for obj in visible_objects])
-        target_text_feats = torch.tensor(target_text_feats, device=self.device)
         
         # compute cosine similarity        
         scores = self.cos(object_feats, target_text_feats)
-        return scores.squeeze(-1)
+
+        return np.float32(scores.squeeze(-1).cpu())

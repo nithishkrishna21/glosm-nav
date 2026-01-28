@@ -108,11 +108,11 @@ class SigLIPClient:
         else:
             self.device = device
 
-    def encode_image(self, image: np.ndarray) -> np.ndarray:
+    def encode_image(self, image: np.ndarray) -> torch.Tensor:
         """
         Extract image features via server.
 
-        Returns: (1, D) feature vector as numpy array
+        Returns: (1, D) feature vector as torch.Tensor
         """
 
         response = send_request(self.url,
@@ -122,11 +122,11 @@ class SigLIPClient:
         # return np.array(response["image_features"], dtype=np.float32)
         return torch.Tensor(response["image_features"]).float().to(self.device)
 
-    def encode_text(self, text: str) -> np.ndarray:
+    def encode_text(self, text: str) -> torch.Tensor:
         """
         Extract text features via server.
 
-        Returns: (1, D) feature vector as numpy array
+        Returns: (1, D) feature vector as torch.Tensor
         """
         response = send_request(self.url,
                                 request_type = "encode_text",
