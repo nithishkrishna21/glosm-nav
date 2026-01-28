@@ -8,6 +8,10 @@ from PIL import Image
 
 from .server_wrapper import ServerMixin, host_model, send_request, str_to_image
 
+
+class BLIP2ITM:
+    """BLIP 2 Image-Text Matching model."""
+
     def __init__(
         self,
         name: str = "blip2_image_text_matching",
