@@ -13,8 +13,8 @@ export CLASSES_PATH=${CLASSES_PATH:-vlfm/vlm/classes.txt}
 export GROUNDING_DINO_PORT=${GROUNDING_DINO_PORT:-12181}
 # export BLIP2ITM_PORT=${BLIP2ITM_PORT:-12182}  # Commented out - using SigLIP2 instead
 export SAM_PORT=${SAM_PORT:-12183}
-export YOLOV7_PORT=${YOLOV7_PORT:-12184}
-export SIGLIP2_PORT=${SIGLIP2_PORT:-12185}
+export YOLOV7_PORT=${YOLOV7_PORT:-12186}
+export SIGLIP2_PORT=${SIGLIP2_PORT:-12184}
 
 session_name=vlm_servers_${RANDOM}
 
@@ -31,7 +31,7 @@ tmux split-window -h -t ${session_name}:0.2
 tmux send-keys -t ${session_name}:0.0 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.grounding_dino --port ${GROUNDING_DINO_PORT}" C-m
 # tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.blip2itm --port ${BLIP2ITM_PORT}" C-m  # Commented out
 tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.siglip2 --port ${SIGLIP2_PORT}" C-m
-tmux send-keys -t ${session_name}:0.2 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.sam --port ${SAM_PORT}" C-m
+tmux send-keys -t ${session_name}:0.2 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.sam_detector --port ${SAM_PORT}" C-m
 tmux send-keys -t ${session_name}:0.3 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.yolov7 --port ${YOLOV7_PORT}" C-m
 
 # Attach to the tmux session to view the windows
