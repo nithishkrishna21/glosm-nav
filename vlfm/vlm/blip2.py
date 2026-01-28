@@ -8,10 +8,7 @@ from PIL import Image
 
 from .server_wrapper import ServerMixin, host_model, send_request, str_to_image
 
-try:
-    from lavis.models import load_model_and_preprocess
-except ModuleNotFoundError:
-    print("Could not import lavis. This is OK if you are only using the client.")
+
 
 
 class BLIP2:
@@ -23,6 +20,11 @@ class BLIP2:
     ) -> None:
         if device is None:
             device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
+
+        try:
+            from lavis.models import load_model_and_preprocess
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError("Could not import lavis. This is OK if you are only using the client.")
 
         self.model, self.vis_processors, _ = load_model_and_preprocess(
             name=name,

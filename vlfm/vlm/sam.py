@@ -15,10 +15,7 @@ from .server_wrapper import (
     str_to_image,
 )
 
-try:
-    from mobile_sam import SamPredictor, sam_model_registry
-except ModuleNotFoundError:
-    print("Could not import mobile_sam. This is OK if you are only using the client.")
+
 
 
 class MobileSAM:
@@ -31,6 +28,11 @@ class MobileSAM:
         if device is None:
             device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
         self.device = device
+
+        try:
+            from mobile_sam import SamPredictor, sam_model_registry
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError("Could not import mobile_sam. Make sure it is installed if running the server.")
 
         mobile_sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
         mobile_sam.to(device=device)

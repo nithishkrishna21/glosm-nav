@@ -10,6 +10,10 @@ from vlfm.vlm.detections import ObjectDetections
 
 from .server_wrapper import ServerMixin, host_model, send_request, str_to_image
 
+GROUNDING_DINO_CONFIG = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
+GROUNDING_DINO_WEIGHTS = "data/groundingdino_swint_ogc.pth"
+CLASSES = "chair . person . dog ."  # Default classes. Can be overridden at inference.
+
 class GroundingDINO:
     def __init__(
         self,

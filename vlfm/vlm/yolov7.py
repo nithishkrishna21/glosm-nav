@@ -12,30 +12,41 @@ from vlfm.vlm.detections import ObjectDetections
 
 from .server_wrapper import ServerMixin, host_model, send_request, str_to_image
 
-sys.path.insert(0, "yolov7/")
-try:
-    from models.experimental import attempt_load  # noqa: E402
-    from utils.datasets import letterbox  # noqa: E402
-    from utils.general import (  # noqa: E402
-        check_img_size,
-        non_max_suppression,
-        scale_coords,
-    )
-    from utils.torch_utils import TracedModel  # noqa: E402
-except Exception:
-    print("Could not import yolov7. This is OK if you are only using the client.")
-sys.path.pop(0)
+
 
 
 class YOLOv7:
     def __init__(self, weights: str, image_size: int = 640, half_precision: bool = True):
         """Loads the model and saves it to a field."""
+        sys.path.insert(0, "yolov7/")
+        try:
+            from models.experimental import attempt_load  # noqa: E402
+            from utils.datasets import letterbox  # noqa: E402
+            from utils.general import (  # noqa: E402
+                check_img_size,
+                non_max_suppression,
+                scale_coords,
+            )
+            from utils.torch_utils import TracedModel  # noqa: E402
+        except Exception:
+            raise ModuleNotFoundError("Could not import yolov7. Make sure it is installed if running the server.")
+        sys.path.pop(0)
+
+        # Assign imported functions to self so methods can use them (though for module globals we need careful scope)
+        # Actually, for global functions imported from modules, we should probably keep them accessible.
+        # However, since they are functions, we can assign them to self for use in predict.
+        self.letterbox = letterbox
+        self.check_img_size = check_img_size
+        self.non_max_suppression = non_max_suppression
+        self.scale_coords = scale_coords
+        self.TracedModel = TracedModel
+
         self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         self.half_precision = self.device.type != "cpu" and half_precision
         self.model = attempt_load(weights, map_location=self.device)  # load FP32 model
         stride = int(self.model.stride.max())  # model stride
-        self.image_size = check_img_size(image_size, s=stride)  # check img_size
-        self.model = TracedModel(self.model, self.device, self.image_size)
+        self.image_size = self.check_img_size(image_size, s=stride)  # check img_size
+        self.model = self.TracedModel(self.model, self.device, self.image_size)
         if self.half_precision:
             self.model.half()  # to FP16
 
@@ -73,7 +84,7 @@ class YOLOv7:
             (self.image_size, int(self.image_size * 0.7)),
             interpolation=cv2.INTER_AREA,
         )
-        img = letterbox(img, new_shape=self.image_size)[0]
+        img = self.letterbox(img, new_shape=self.image_size)[0]
         img = img.transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
         img = np.ascontiguousarray(img)
 
@@ -88,7 +99,7 @@ class YOLOv7:
             pred = self.model(img)[0]
 
         # Apply NMS
-        pred = non_max_suppression(
+        pred = self.non_max_suppression(
             pred,
             conf_thres,
             iou_thres,
@@ -96,7 +107,7 @@ class YOLOv7:
             agnostic=agnostic_nms,
         )[0]
         # Rescale boxes from img_size to im0 size
-        pred[:, :4] = scale_coords(img.shape[2:], pred[:, :4], orig_shape).round()
+        pred[:, :4] = self.scale_coords(img.shape[2:], pred[:, :4], orig_shape).round()
         pred[:, 0] /= orig_shape[1]
         pred[:, 1] /= orig_shape[0]
         pred[:, 2] /= orig_shape[1]
