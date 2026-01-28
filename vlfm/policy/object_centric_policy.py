@@ -25,6 +25,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from vlfm.policy.itm_policy import BaseITMPolicy
+from vlfm.policy.habitat_policies import HabitatMixin
 from vlfm.mapping.value_map import ValueMap
 from vlfm.policy.utils.acyclic_enforcer import AcyclicEnforcer
 
