@@ -1,13 +1,8 @@
 # Copyright (c) 2023 Boston Dynamics AI Institute LLC. All rights reserved.
+from .server_wrapper import ServerMixin, host_model, send_request, str_to_image
 
 import numpy as np
 import torch
-from maskrcnn_benchmark.config import cfg
-from maskrcnn_benchmark.engine.predictor_FIBER import GLIPDemo
-
-from vlfm.vlm.detections import ObjectDetections
-
-from .server_wrapper import ServerMixin, host_model, send_request, str_to_image
 
 DEFAULT_CONFIG = "FIBER/fine_grained/configs/refcocog.yaml"
 DEFAULT_WEIGHTS = "FIBER/fine_grained/models/fiber_refcocog.pth"
@@ -15,6 +10,12 @@ DEFAULT_WEIGHTS = "FIBER/fine_grained/models/fiber_refcocog.pth"
 
 class FIBER:
     def __init__(self, config_file: str = DEFAULT_CONFIG, weights: str = DEFAULT_WEIGHTS):
+        try:
+            from maskrcnn_benchmark.config import cfg
+            from maskrcnn_benchmark.engine.predictor_FIBER import GLIPDemo
+        except ModuleNotFoundError:
+             raise ModuleNotFoundError("Could not import fiber. Make sure it is installed if running the server.")
+             
         cfg.merge_from_file(config_file)
         cfg.num_gpus = 1
         cfg.SOLVER.IMS_PER_BATCH = 1

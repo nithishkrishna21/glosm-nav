@@ -8,15 +8,6 @@ from PIL import Image
 
 from .server_wrapper import ServerMixin, host_model, send_request, str_to_image
 
-try:
-    from lavis.models import load_model_and_preprocess
-except ModuleNotFoundError:
-    print("Could not import lavis. This is OK if you are only using the client.")
-
-
-class BLIP2ITM:
-    """BLIP 2 Image-Text Matching model."""
-
     def __init__(
         self,
         name: str = "blip2_image_text_matching",
@@ -25,6 +16,11 @@ class BLIP2ITM:
     ) -> None:
         if device is None:
             device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
+
+        try:
+            from lavis.models import load_model_and_preprocess
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError("Could not import lavis. Make sure it is installed if running the server.")
 
         self.model, self.vis_processors, self.text_processors = load_model_and_preprocess(
             name=name,
