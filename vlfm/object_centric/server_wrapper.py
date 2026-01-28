@@ -131,7 +131,7 @@ def _send_request(url: str, **kwargs: Any) -> dict:
         start_time = time.time()
         while True:
             try:
-                resp = requests.post(url, headers=headers, json=payload, timeout=1)
+                resp = requests.post(url, headers=headers, json=payload, timeout=60)
                 if resp.status_code == 200:
                     result = resp.json()
                     break
@@ -142,8 +142,8 @@ def _send_request(url: str, **kwargs: Any) -> dict:
                 requests.exceptions.RequestException,
             ) as e:
                 print(e)
-                if time.time() - start_time > 20:
-                    raise Exception("Request timed out after 20 seconds")
+                if time.time() - start_time > 300:
+                    raise Exception("Request timed out after 300 seconds")
 
         try:
             # Delete the lock file

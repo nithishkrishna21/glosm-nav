@@ -11,11 +11,11 @@ This module contains our capstone implementation for improving VLFM with:
 
 from .sam_detector import SAMDetector
 from .siglip2 import SigLIP
-from .object_detection import ObjectDetector, Detection
+from .object_detection import ObjectSegmenter, Detection
 
 __all__ = [
     "SAMDetector",
     "SigLIP",
-    "ObjectDetector",
+    "ObjectSegmenter",
     "Detection",
 ]
