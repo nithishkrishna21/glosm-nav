@@ -109,6 +109,17 @@ class HabitatMixin:
         # Only bother visualizing if we're actually going to save the video
         kwargs["visualize"] = len(config.habitat_baselines.eval.video_option) > 0
 
+        # Calculate camera intrinsics
+        camera_fov_rad = np.deg2rad(kwargs["camera_fov"])
+        fx = fy = kwargs["image_width"] / (2 * np.tan(camera_fov_rad / 2))
+        cx = kwargs["image_width"] / 2
+        cy = sim_sensors_cfg.depth_sensor.height / 2
+        kwargs["camera_intrinsics"] = np.array([
+            [fx, 0, cx],
+            [0, fy, cy],
+            [0, 0, 1]
+        ])
+
         if "hm3d" in config.habitat.dataset.data_path:
             kwargs["dataset_type"] = "hm3d"
         elif "mp3d" in config.habitat.dataset.data_path:
