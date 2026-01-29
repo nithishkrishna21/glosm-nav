@@ -13,8 +13,8 @@ export CLASSES_PATH=${CLASSES_PATH:-vlfm/vlm/classes.txt}
 export GROUNDING_DINO_PORT=${GROUNDING_DINO_PORT:-12181}
 # export BLIP2ITM_PORT=${BLIP2ITM_PORT:-12182}  # Commented out - using SigLIP2 instead
 export SAM_PORT=${SAM_PORT:-12183}
-export YOLOV7_PORT=${YOLOV7_PORT:-12186}
-export SIGLIP2_PORT=${SIGLIP2_PORT:-12184}
+export YOLOV7_PORT=${YOLOV7_PORT:-12184}  # Changed from 12186 to match code expectations
+export SIGLIP2_PORT=${SIGLIP2_PORT:-12185}  # Changed from 12184 to avoid conflict
 
 session_name=vlm_servers_${RANDOM}
 

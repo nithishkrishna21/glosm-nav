@@ -24,7 +24,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from vlfm.policy.itm_policy import BaseITMPolicy
+from vlfm.policy.itm_policy import BaseITMPolicy, ITMPolicyV2
 from vlfm.policy.habitat_policies import HabitatMixin
 from vlfm.mapping.value_map import ValueMap
 from vlfm.policy.utils.acyclic_enforcer import AcyclicEnforcer
@@ -38,7 +38,7 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 
 
 @baseline_registry.register_policy
-class ObjectCentricPolicy(HabitatMixin, BaseITMPolicy):
+class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
     """
     Object-centric navigation policy.
 
@@ -95,31 +95,14 @@ class ObjectCentricPolicy(HabitatMixin, BaseITMPolicy):
     def _initialize(self) -> Tensor:
         return super()._initialize()
 
-    def _get_policy_info(self) -> Dict[str, Any]:
-        return super()._get_policy_info()
+    def _get_policy_info(self, detections) -> Dict[str, Any]:
+        return super()._get_policy_info(detections)
 
     # _cache_observations the super method is used
 
     # for _act, the implementation of ITMPolicyV2 is used here
-    def act(
-        self,
-        observations: Dict,
-        rnn_hidden_states: Any,
-        prev_actions: Any,
-        masks: Tensor,
-        deterministic: bool = False,
-    ) -> Any:
+    # _cache_observations the super method is used
 
-        self._pre_step(observations, masks)
-        
-        # if self._visualize:
-        #     self._update_value_map()
-
-        self._update_value_map()
-            
-        return super().act(observations, rnn_hidden_states, prev_actions, masks, deterministic)
-
-    # custome logic, needs to be overwritten
     def _update_value_map(self) -> None:
         """
         Update value map with object-centric scores.
@@ -130,6 +113,7 @@ class ObjectCentricPolicy(HabitatMixin, BaseITMPolicy):
 
         # Step 2: Detect objects in current frame
         detections = self.object_segmenter.detect_objects(rgb, depth, camera_pose)
+        print(f"DEBUG: Detected {len(detections)} objects this frame")
 
         # Step 3: Update object map
         self.object_map.update(detections)
@@ -137,6 +121,7 @@ class ObjectCentricPolicy(HabitatMixin, BaseITMPolicy):
         # Step 4: Get visible objects and compute scores
         visible_objects = self.object_map.get_visible_objects()
         scores = self.compute_object_target_similarity(visible_objects, self.target_text_features)
+        print(f"DEBUG: {len(visible_objects)} visible objects in map, scores: {scores}")
 
         # Step 5: Update value map
         self._value_map.update_map_object_wise(visible_objects, scores, depth, 

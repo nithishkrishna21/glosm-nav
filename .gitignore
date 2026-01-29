@@ -186,3 +186,14 @@ habitat-lab/
 GroundingDINO/
 __pycache__/
 *.pyc
+
+
+# other stuff
+data/
+lockfiles/
+videos/
+tb/
+outputs/
+scripts/dataset_download
+yolov7/
+traced_model.pt

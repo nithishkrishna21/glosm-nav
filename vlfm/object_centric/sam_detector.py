@@ -62,7 +62,9 @@ class SAMDetector:
 
 
 class MobileSAMClient:
-    def __init__(self, port: int = 12183):
+    def __init__(self, port: int = None):
+        if port is None:
+            port = int(os.environ.get("SAM_PORT", "12183"))
         self.url = f"http://localhost:{port}/mobile_sam"
 
     def segment_image(self, image: np.ndarray) -> List[Dict]:

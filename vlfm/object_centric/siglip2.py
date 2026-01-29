@@ -101,7 +101,9 @@ class SigLIP:
         
 
 class SigLIPClient:
-    def __init__(self, port: int = 12184, device = None):
+    def __init__(self, port: int = None, device = None):
+        if port is None:
+            port = int(os.environ.get("SIGLIP2_PORT", "12185"))
         self.url = f"http://localhost:{port}/siglip"
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -157,7 +159,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=12184)
+    parser.add_argument("--port", type=int, default=12185)
     parser.add_argument(
         "--model",
         type=str,
