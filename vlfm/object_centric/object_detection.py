@@ -143,10 +143,15 @@ class ObjectSegmenter:
             # ──────────────────────────────────────────────────────────
 
             crop_bbox = self._create_bbox_crop(rgb, bbox, bbox_margin=self.bbox_margin)
-            crop_bbox = cv2.resize(crop_bbox, (512, 512))
-
             crop_masked_bbox = self._create_masked_crop(rgb, mask, bbox)
+            
+            # Skip if either crop is empty
+            if crop_bbox.size == 0 or crop_masked_bbox.size == 0:
+                continue
+                
+            crop_bbox = cv2.resize(crop_bbox, (512, 512))
             crop_masked_bbox = cv2.resize(crop_masked_bbox, (512, 512))
+
 
 
             # ──────────────────────────────────────────────────────────

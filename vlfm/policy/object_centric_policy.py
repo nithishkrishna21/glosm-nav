@@ -72,19 +72,24 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             geometric_sim_type="iou"
         )
 
-        self.target_text_features = self.siglip_client.encode_text(text_prompt)
-
+        # Store the text prompt template (e.g., "Seems like there is a target_object ahead.")
+        # The actual target will be set in _pre_step() when we know the objectgoal
+        self._text_prompt = text_prompt
+        self.target_text_features = None  # Will be set after we know the target object
+        
         self.cos = torch.nn.CosineSimilarity(dim = -1)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # Initialize ValueMap (reusing VLFM's implementation)
-        # Note: We use 1 channel per target object (usually 1)
         self._value_map = ValueMap(
             value_channels=1,
             use_max_confidence=True,
             obstacle_map=self._obstacle_map
         )
         self._acyclic_enforcer = AcyclicEnforcer()
+        
+        # Frontier tracking for _get_best_frontier() persistence
+        self._last_value = float("-inf")
+        self._last_frontier = np.zeros(2)
 
     def _reset(self) -> None:
         """Reset policy state for new episode."""
@@ -92,6 +97,20 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         self.object_map.reset()
         self._value_map.reset()
         self._acyclic_enforcer = AcyclicEnforcer()
+        self.target_text_features = None  # Reset for new episode
+        self._last_value = float("-inf")
+        self._last_frontier = np.zeros(2)
+
+    def _pre_step(self, observations: Dict, masks: Tensor) -> None:
+        """Pre-step processing to encode target text features."""
+        super()._pre_step(observations, masks)
+        
+        # Encode target text features only once per episode when target is known
+        if self.target_text_features is None and self._target_object:
+            # Replace "target_object" placeholder with actual object name
+            actual_prompt = self._text_prompt.replace("target_object", self._target_object)
+            self.target_text_features = self.siglip_client.encode_text(actual_prompt)
+            print(f"Target object for this episode: '{actual_prompt}'\n")
 
     def _initialize(self) -> Tensor:
         return super()._initialize()
@@ -109,6 +128,10 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         Update value map with object-centric scores.
 
         """
+        # Skip if target features not yet encoded
+        if self.target_text_features is None:
+            return
+        
         # Step 1: Get observations
         rgb, depth, camera_pose, min_depth, max_depth, fov = self._observations_cache["value_map_rgbd"][0]
 
@@ -127,6 +150,15 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # Step 5: Update value map
         self._value_map.update_map_object_wise(visible_objects, scores, depth, 
         camera_pose, min_depth, max_depth, fov)
+        
+        # Debug: Check value map statistics
+        vm_min = self._value_map._value_map.min()
+        vm_max = self._value_map._value_map.max()
+        vm_nonzero = self._value_map._value_map[self._value_map._value_map != 0]
+        if len(vm_nonzero) > 0:
+            print(f"DEBUG: Value map - min: {vm_min:.4f}, max: {vm_max:.4f}, nonzero_mean: {vm_nonzero.mean():.4f}, nonzero_count: {len(vm_nonzero)}")
+        else:
+            print(f"DEBUG: Value map - ALL ZEROS (no objects painted)")
 
         # Step 6: Update agent trajectory
         self._value_map.update_agent_traj(
@@ -152,7 +184,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
     # new logic
     def compute_object_target_similarity(
         self, 
-        visible_objects: List[MapObject], 
+        visible_objects: List[MapObject],
         target_text_feats: torch.Tensor
     ) -> np.ndarray:
         """
