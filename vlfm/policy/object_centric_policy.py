@@ -64,6 +64,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             sam_detector=self.mobile_sam_client,
             siglip=self.siglip_client,
             camera_intrinsics=camera_intrinsics,
+            min_points=4,  # Minimum 4 points needed for 3D bounding box computation
         )
 
         self.object_map = ObjectMap(
@@ -121,7 +122,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # Step 4: Get visible objects and compute scores
         visible_objects = self.object_map.get_visible_objects()
         scores = self.compute_object_target_similarity(visible_objects, self.target_text_features)
-        print(f"DEBUG: {len(visible_objects)} visible objects in map, scores: {scores}")
+        print(f"DEBUG: {len(visible_objects)} visible objects in map, scores: {scores}\n")
 
         # Step 5: Update value map
         self._value_map.update_map_object_wise(visible_objects, scores, depth, 

@@ -140,7 +140,7 @@ class BaseObjectNavPolicy(BasePolicy):
         action_numpy = pointnav_action.detach().cpu().numpy()[0]
         if len(action_numpy) == 1:
             action_numpy = action_numpy[0]
-        print(f"Step: {self._num_steps} | Mode: {mode} | Action: {action_numpy}")
+        print(f"Step: {self._num_steps} | Mode: {mode} | Action: {action_numpy}\n")
         self._policy_info.update(self._get_policy_info(detections[0]))
         self._num_steps += 1
 

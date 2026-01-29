@@ -39,11 +39,11 @@ class SAMDetector:
         self.mask_generator = SamAutomaticMaskGenerator(
             model=mobile_sam,
             points_per_side=32,
-            pred_iou_thresh=0.86,
-            stability_score_thresh=0.92,
+            pred_iou_thresh=0.7,
+            stability_score_thresh=0.8,
             crop_n_layers=1,
             crop_n_points_downscale_factor=2,
-            min_mask_region_area=100
+            min_mask_region_area=50
         )
 
     def segment_image(self, image: np.ndarray) -> List[Dict]:

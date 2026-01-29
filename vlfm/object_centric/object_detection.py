@@ -112,11 +112,13 @@ class ObjectSegmenter:
         # ══════════════════════════════════════════════════════════════
 
         masks = self._segment_with_sam(rgb)
+        print(f"DEBUG SAM: Raw masks from SAM: {len(masks)}")
 
-        # Discard low-confidence masks 
-        masks = [m for m in masks if m['predicted_iou'] > 0.88
-                 and m['stability_score'] > 0.8
-                 and m['area'] < (0.5 * rgb.shape[0] * rgb.shape[1])]
+        # # Discard low-confidence masks 
+        # masks = [m for m in masks if m['predicted_iou'] > 0.70
+        #          and m['stability_score'] > 0.75
+        #          and m['area'] < (0.5 * rgb.shape[0] * rgb.shape[1])]
+        # print(f"DEBUG SAM: After filtering (iou>0.7, stability>0.75): {len(masks)} masks")
 
 
         # ══════════════════════════════════════════════════════════════
@@ -180,8 +182,11 @@ class ObjectSegmenter:
             )
 
             # Filter: minimum points threshold
-            if len(point_cloud_world.points) < self.min_points:
+            num_points = len(point_cloud_world.points)
+            if num_points < self.min_points:
+                # print(f"DEBUG: Rejecting mask (only {num_points} points, need {self.min_points})")
                 continue
+            # print(f"DEBUG: Accepting mask with {num_points} points")
 
 
             # ──────────────────────────────────────────────────────────

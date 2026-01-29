@@ -85,8 +85,10 @@ class MapObject:
         # downsample to remove redundant points
         self.point_cloud = self._downsample_voxel(merged_point_cloud)
 
-        # recompute the bounding box
-        self.bbox_3d = self._compute_bbox_3d(self.point_cloud)
+        # recompute the bounding box only if we have enough points
+        if len(self.point_cloud.points) >= 4:
+            self.bbox_3d = self._compute_bbox_3d(self.point_cloud)
+        # else: keep the old bbox
 
         # update the semantic features
         self.features = (self.num_detections * self.features + detection.features) / (self.num_detections + 1)
@@ -292,15 +294,20 @@ class ObjectMap:
         Returns: (M, N) torch tensor of cosine similarities [-1, 1]
         """
         # Stack detection features into (M, D) tensor
-        det_features = torch.stack([d.features for d in detections], dim=0).to(self.device)  # (M, D)
+        det_features = torch.stack([d.features.squeeze() for d in detections], dim=0).to(self.device)  # (M, D)
+        # print(f"DEBUG SHAPE: det_features after stack: {det_features.shape}")
 
         # Stack object features into (N, D) tensor
-        obj_features = torch.stack([obj.features for obj in self.objects], dim=0).to(self.device)  # (N, D)
+        obj_features = torch.stack([obj.features.squeeze() for obj in self.objects], dim=0).to(self.device)  # (N, D)
+        # print(f"DEBUG SHAPE: obj_features after stack: {obj_features.shape}")
 
-        det_features = det_features.unsqueeze(-1)  # (M, D, 1)
-        obj_features = obj_features.T.unsqueeze(0)  # (1, D, N)
+        # Reshape for broadcasting: (M, 1, D) and (1, N, D)
+        det_features = det_features.unsqueeze(1)  # (M, 1, D)
+        obj_features = obj_features.unsqueeze(0)  # (1, N, D)
+        # print(f"DEBUG SHAPE: det_features after unsqueeze: {det_features.shape}")
+        # print(f"DEBUG SHAPE: obj_features after unsqueeze: {obj_features.shape}")
 
-        visual_sim = F.cosine_similarity(det_features, obj_features, dim=1)  # (M, N)
+        visual_sim = F.cosine_similarity(det_features, obj_features, dim=2)  # (M, N)
         visual_sim = visual_sim.float().to(self.device)
 
         return visual_sim
