@@ -166,11 +166,17 @@ class ObjectSegmenter:
             # STEP 3c: HOV-SG weighted fusion
             # ──────────────────────────────────────────────────────────
 
-            fused_features = self._fuse_features(
-                global_features,
-                cropped_feats,
-                cropped_masked_feats
-            )
+            # fused_features = self._fuse_features(
+            #     global_features,
+            #     cropped_feats,
+            #     cropped_masked_feats
+            # )
+            
+            # DEBUG: Use ONLY Masked features (Strongest signal hypothesis)
+            # Crop=0.05, (Crop+Mask)/2=0.10 => Mask must be ~0.15
+            fused_features = cropped_masked_feats
+
+            # fused_features = global_features
 
 
             # ──────────────────────────────────────────────────────────
@@ -331,8 +337,9 @@ class ObjectSegmenter:
         F_fused = w_i * F_g + (1 - w_i) * F_l
         F_fused = torch.nn.functional.normalize(F_fused, p=2, dim=-1)
         # F_fused = F_fused.cpu().numpy()
-
-        return F_fused.float().to(self.device)
+        
+        # Squeeze to remove batch dimension: [1, 768] -> [768]
+        return F_fused.squeeze(0).float().to(self.device)
 
     def _depth_to_pointcloud(
         self,

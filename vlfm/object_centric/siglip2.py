@@ -35,6 +35,16 @@ class SigLIP:
         self.model = AutoModel.from_pretrained(model_name, torch_dtype=self.dtype, device_map=self.device, trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+        
+        # Capture SigLIP's learned scale and bias for probability calibration
+        if hasattr(self.model, "logit_scale") and hasattr(self.model, "logit_bias"):
+            self.logit_scale = self.model.logit_scale.item()
+            self.logit_bias = self.model.logit_bias.item()
+        else:
+            # Fallback for models that might not have these specific attributes exposed similarly
+            print("WARNING: Could not find logit_scale/bias. Using raw cosine similarity.")
+            self.logit_scale = None
+            self.logit_bias = None
 
     def encode_image(self, image: Union[np.ndarray, Image.Image]) -> np.ndarray:
         """
@@ -51,7 +61,7 @@ class SigLIP:
             image_features = self.model.get_image_features(**inputs)
             image_features = normalize(image_features, p = 2.0, dim = -1)
             image_features = np.float32(image_features.cpu())
-        
+
         return image_features
 
 
@@ -65,7 +75,9 @@ class SigLIP:
         Returns:
             text_features: np.ndarray of shape (1, output_dim)
         """
-        inputs = self.tokenizer([text], padding="max_length", return_tensors = "pt").to(self.device)
+        # SigLIP2 requires lowercasing and fixed length padding
+        text = text.lower()
+        inputs = self.tokenizer([text], padding="max_length", max_length=64, truncation=True, return_tensors = "pt").to(self.device)
         with torch.inference_mode():
             text_features = self.model.get_text_features(**inputs)
             text_features = normalize(text_features, p = 2.0, dim = -1)
@@ -79,25 +91,29 @@ class SigLIP:
         text_features: torch.Tensor
     ) -> float:
         """
-        Compute cosine similarity between image and text features.
+        Compute probability score between image and text features.
+        
+        Uses SigLIP's sigmoid transformation: sigmoid( (cosine * exp(scale)) + bias )
 
         Args:
             image_features: torch.Tensor of shape (1, output_dim) normalized image features
             text_features: torch.Tensor of shape (1, output_dim) normalized text features
 
         Returns:
-            float: Cosine similarity
+            float: Probability score [0, 1]
         """
 
-        # dot_product = np.dot(image_features, text_features)
-        # norm_img = np.linalg.norm(image_features)
-        # norm_text = np.linalg.norm(text_features)
+        # 1. Compute Raw Cosine Similarity
+        cosine_sim = torch.nn.functional.cosine_similarity(image_features, text_features, dim = -1)
 
-        # similarity = dot_product / (norm_img * norm_text + 1e-8)
-
-        similarity = torch.nn.functional.cosine_similarity(image_features, text_features, dim = -1)
-
-        return float(similarity.squeeze())
+        # 2. Apply SigLIP Calibration (if available) -> Probability
+        if self.logit_scale is not None and self.logit_bias is not None:
+             # logits = (cosine * exp(log_scale)) + bias
+             logits = (cosine_sim * np.exp(self.logit_scale)) + self.logit_bias
+             probability = torch.sigmoid(logits)
+             return float(probability.squeeze())
+        
+        return float(cosine_sim.squeeze())
         
 
 class SigLIPClient:
@@ -155,6 +171,13 @@ class SigLIPClient:
         return float(response["similarity"])
 
 
+    def get_model_params(self) -> dict:
+        """
+        Get model parameters (scale, bias) from server.
+        """
+        response = send_request(self.url, request_type="get_model_params")
+        return response
+
 if __name__ == "__main__":
     import argparse
 
@@ -208,6 +231,12 @@ if __name__ == "__main__":
                 }
 
                 return response
+            
+            elif request_type == "get_model_params":
+                return {
+                    "logit_scale": self.logit_scale,
+                    "logit_bias": self.logit_bias
+                }
             
             else:
                 raise ValueError(f"Unknown request type: {request_type}")

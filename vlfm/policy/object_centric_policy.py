@@ -59,6 +59,17 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
 
         self.mobile_sam_client = MobileSAMClient()
         self.siglip_client = SigLIPClient()
+        
+        # Get calibration params for SigLIP probability
+        try:
+            params = self.siglip_client.get_model_params()
+            self.siglip_logit_scale = params.get("logit_scale")
+            self.siglip_logit_bias = params.get("logit_bias")
+            print(f"[ObjectCentricPolicy] Loaded SigLIP params: scale={self.siglip_logit_scale}, bias={self.siglip_logit_bias}")
+        except Exception as e:
+            print(f"[ObjectCentricPolicy] Warning: Could not fetch SigLIP params: {e}")
+            self.siglip_logit_scale = None
+            self.siglip_logit_bias = None
 
         self.object_segmenter = ObjectSegmenter(
             sam_detector=self.mobile_sam_client,
@@ -107,10 +118,14 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         
         # Encode target text features only once per episode when target is known
         if self.target_text_features is None and self._target_object:
-            # Replace "target_object" placeholder with actual object name
-            siglip_prompt = f"This is a photo of a {self._target_object}."
-            self.target_text_features = self.siglip_client.encode_text(siglip_prompt)
-            print(f"[SigLIP] Encoded target: '{siglip_prompt}'\n")
+            # Official SigLIP2 format from HuggingFace examples:
+            # texts = ["a photo of 2 cats", "a photo of 2 dogs"]
+            siglip_prompt = f"a photo of a {self._target_object.lower()}"
+            self.target_text_features = self.siglip_client.encode_text(siglip_prompt).squeeze(0)  # [1, 768] -> [768]
+            print(f"[SigLIP] Encoded target: '{siglip_prompt}'")
+            # print(f"[DEBUG] Text features shape: {self.target_text_features.shape}")
+            # print(f"[DEBUG] Text features norm: {torch.norm(self.target_text_features):.4f}")
+            # print(f"[DEBUG] Text features sample: {self.target_text_features[:5]}\n")
 
     def _initialize(self) -> Tensor:
         return super()._initialize()
@@ -145,7 +160,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # Step 4: Get visible objects and compute scores
         visible_objects = self.object_map.get_visible_objects()
         scores = self.compute_object_target_similarity(visible_objects, self.target_text_features)
-        print(f"DEBUG: {len(visible_objects)} visible objects in map, scores: {scores}\n")
+        # print(f"DEBUG: {len(visible_objects)} visible objects in map, scores: {scores}\n")
 
         # Step 5: Update value map
         self._value_map.update_map_object_wise(visible_objects, scores, depth, 
@@ -196,7 +211,25 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         
         object_feats = torch.stack([obj.features for obj in visible_objects])
         
+        # Ensure proper shape: remove any extra dimensions
+        object_feats = object_feats.squeeze()  # [N, 1, 768] -> [N, 768]
+        if object_feats.dim() == 1:  # Handle case of single object
+            object_feats = object_feats.unsqueeze(0)
+        
         # compute cosine similarity        
-        scores = self.cos(object_feats, target_text_feats)
+        raw_cosine = self.cos(object_feats, target_text_feats)
+        scores = raw_cosine.clone()
+
+        # Apply SigLIP Calibration if available -> Probability
+        if self.siglip_logit_scale is not None and self.siglip_logit_bias is not None:
+             # sigmoid( cosine * exp(scale) + bias )
+             logits = (scores * np.exp(self.siglip_logit_scale)) + self.siglip_logit_bias
+             scores = torch.sigmoid(logits)
+             
+        # DEBUG: Print stats
+        if len(scores) > 0:
+            print(f"[DEBUG] Scores - Max Cosine: {raw_cosine.max():.4f}, Max Prob: {scores.max():.4f}")
+            if scores.max() > 0.1:
+                print(f"[DEBUG] FOUND CANDIDATE! Prob: {scores.max():.4f}")
 
         return np.float32(scores.squeeze(-1).cpu())
