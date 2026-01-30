@@ -170,10 +170,9 @@ class SigLIPClient:
         
         return float(response["similarity"])
 
-
     def get_model_params(self) -> dict:
         """
-        Get model parameters (scale, bias) from server.
+        Get model parameters from server.
         """
         response = send_request(self.url, request_type="get_model_params")
         return response
