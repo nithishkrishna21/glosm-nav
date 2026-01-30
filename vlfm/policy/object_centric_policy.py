@@ -64,7 +64,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             sam_detector=self.mobile_sam_client,
             siglip=self.siglip_client,
             camera_intrinsics=camera_intrinsics,
-            min_points=4,  # Minimum 4 points needed for 3D bounding box computation
+            min_points=16,  # Match ConceptGraphs min_points_threshold
         )
 
         self.object_map = ObjectMap(
@@ -108,9 +108,9 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # Encode target text features only once per episode when target is known
         if self.target_text_features is None and self._target_object:
             # Replace "target_object" placeholder with actual object name
-            actual_prompt = self._text_prompt.replace("target_object", self._target_object)
-            self.target_text_features = self.siglip_client.encode_text(actual_prompt)
-            print(f"Target object for this episode: '{actual_prompt}'\n")
+            siglip_prompt = f"This is a photo of a {self._target_object}."
+            self.target_text_features = self.siglip_client.encode_text(siglip_prompt)
+            print(f"[SigLIP] Encoded target: '{siglip_prompt}'\n")
 
     def _initialize(self) -> Tensor:
         return super()._initialize()

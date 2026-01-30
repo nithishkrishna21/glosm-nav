@@ -393,7 +393,7 @@ class ObjectSegmenter:
 
     def _denoise_point_cloud_dbscan(self,
         pcd: o3d.geometry.PointCloud,
-        eps = 0.2,
+        eps = 0.05,
         min_points = 10
     ) -> o3d.geometry.PointCloud:
         
@@ -425,7 +425,7 @@ class ObjectSegmenter:
     def _downsample_voxel(
         self,
         pcd: o3d.geometry.PointCloud,
-        voxel_size: float = 0.25,
+        voxel_size: float = 0.025,  # Match ConceptGraphs (2.5cm voxels, not 25cm!)
     ) -> o3d.geometry.PointCloud:
         
         pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
