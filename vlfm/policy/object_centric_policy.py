@@ -163,8 +163,25 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # print(f"DEBUG: {len(visible_objects)} visible objects in map, scores: {scores}\n")
 
         # Step 5: Update value map
-        self._value_map.update_map_object_wise(visible_objects, scores, depth, 
-        camera_pose, min_depth, max_depth, fov)
+        # OLD WAY: Paint individual objects (Sparse)
+        # self._value_map.update_map_object_wise(visible_objects, scores, depth, 
+        # camera_pose, min_depth, max_depth, fov)
+
+        # NEW WAY: Paint entire FOV with MAX score (Dense)
+        # matches original VLFM/BLIP2 behavior but with SigLIP object scores
+        if len(scores) > 0:
+            max_score = float(scores.max())
+        else:
+            max_score = 0.0
+            
+        self._value_map.update_map(
+            np.array([max_score]), 
+            depth, 
+            camera_pose, 
+            min_depth, 
+            max_depth, 
+            fov
+        )
         
         # Debug: Check value map statistics
         vm_min = self._value_map._value_map.min()
@@ -180,6 +197,15 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             self._observations_cache["robot_xy"],
             self._observations_cache["robot_heading"]
         )
+        
+    def _update_object_map(self, *args, **kwargs) -> None:
+        """
+        Override parent's _update_object_map to prevent it from running 
+        the legacy GroundingDINO pipeline which causes crashes.
+        
+        Our object map is updated in _update_value_map instead.
+        """
+        pass
 
     # originally the logic of ITMPolicyV2 is used here, 
     # but since we inherit BaseITMPolicy, we need to overwrite this method
@@ -193,7 +219,8 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
 
         Same as ITMPolicyV2 - uses value map's sort_waypoints().
         """
-        sorted_frontiers, sorted_values = self._value_map.sort_waypoints(frontiers, 0.5)
+        sorted_frontiers, sorted_values = self._value_map.sort_waypoints(frontiers, 2.0)
+        print(f"[DEBUG] Frontiers: {len(frontiers)}, Top 3 values: {sorted_values[:3] if len(sorted_values) > 0 else 'none'}")
         return sorted_frontiers, sorted_values
 
     # new logic
@@ -219,17 +246,11 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # compute cosine similarity        
         raw_cosine = self.cos(object_feats, target_text_feats)
         scores = raw_cosine.clone()
-
-        # Apply SigLIP Calibration if available -> Probability
-        if self.siglip_logit_scale is not None and self.siglip_logit_bias is not None:
-             # sigmoid( cosine * exp(scale) + bias )
-             logits = (scores * np.exp(self.siglip_logit_scale)) + self.siglip_logit_bias
-             scores = torch.sigmoid(logits)
              
         # DEBUG: Print stats
         if len(scores) > 0:
-            print(f"[DEBUG] Scores - Max Cosine: {raw_cosine.max():.4f}, Max Prob: {scores.max():.4f}")
+            print(f"[DEBUG] Scores - Max Cosine: {raw_cosine.max():.4f}")
             if scores.max() > 0.1:
-                print(f"[DEBUG] FOUND CANDIDATE! Prob: {scores.max():.4f}")
+                print(f"[DEBUG] FOUND CANDIDATE! Score: {scores.max():.4f}")
 
         return np.float32(scores.squeeze(-1).cpu())

@@ -67,7 +67,7 @@ class MapObject:
     def _downsample_voxel(
         self,
         pcd: o3d.geometry.PointCloud,
-        voxel_size: float = 0.25,
+        voxel_size: float = 0.025,
     ) -> o3d.geometry.PointCloud:
         
         pcd = pcd.voxel_down_sample(voxel_size=voxel_size)

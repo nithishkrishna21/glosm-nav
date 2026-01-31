@@ -183,7 +183,10 @@ class ValueMap(BaseMap):
             valid_px = px[valid_mask]
 
             if len(valid_px) > 0:
-                temp_value_map[valid_px[:, 0], valid_px[:, 1]] = score
+                temp_value_map[valid_px[:, 0], valid_px[:, 1], 0] = score
+                # Force high confidence for object pixels so they are accepted by fusion
+                # This ensures historical points (outside current FOV cone) are kept
+                # temp_confidence_map[valid_px[:, 0], valid_px[:, 1]] = 1.0
 
         # Fuse the temp_value_map with the existing value map
         self._fuse_object_data(temp_confidence_map, temp_value_map)   
