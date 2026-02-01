@@ -17,7 +17,7 @@ from .object_detection import Detection
 import open3d as o3d
 
 
-class MapObject:
+class SemanticMapObject:
     """
     Represents a persistent object in the map, accumulated across multiple frames.
 
@@ -104,7 +104,7 @@ class MapObject:
         # Make the object visible
         self.is_visible = True
 
-class ObjectMap:
+class SemanticMap:
     """
     Maintains a persistent map of all detected objects.
 
@@ -120,7 +120,7 @@ class ObjectMap:
         max_objects: int = 100                  # Maximum objects to track
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.objects: List[MapObject] = []
+        self.objects: List[SemanticMapObject] = []
         self.similarity_threshold = similarity_threshold
         self.geometric_sim_type = geometric_sim_type
         self.nn_distance_threshold = nn_distance_threshold
@@ -184,6 +184,7 @@ class ObjectMap:
 
         Returns: (M, N) numpy array of geometric similarities
         """
+        # print(f"[DEBUG] Geometric Sim Type: {self.geometric_sim_type}")
         if self.geometric_sim_type == "iou":
             return self._compute_iou_similarities(detections)
         elif self.geometric_sim_type == "overlap":
@@ -361,13 +362,13 @@ class ObjectMap:
                 self.objects[best_obj_idx.item()].update(det)
                 self.objects[best_obj_idx.item()].is_visible = True
 
-    def _create_new_object(self, detection: Detection) -> MapObject:
+    def _create_new_object(self, detection: Detection) -> SemanticMapObject:
         """
-        Create a new MapObject from a detection.
+        Create a new SemanticMapObject from a detection.
 
-        Returns: New MapObject with unique ID
+        Returns: New SemanticMapObject with unique ID
         """
-        obj = MapObject(
+        obj = SemanticMapObject(
             point_cloud = detection.point_cloud,
             features = detection.features,
             confidence = detection.confidence,
@@ -376,19 +377,19 @@ class ObjectMap:
 
         return obj
 
-    def get_visible_objects(self) -> List[MapObject]:
+    def get_visible_objects(self) -> List[SemanticMapObject]:
         """
         Get all objects marked as visible in current frame.
 
-        Returns: List of visible MapObjects
+        Returns: List of visible SemanticMapObjects
         """
         return [obj for obj in self.objects if obj.is_visible]
 
-    def get_all_objects(self) -> List[MapObject]:
+    def get_all_objects(self) -> List[SemanticMapObject]:
         """
         Get all objects in the map (visible or not).
 
-        Returns: List of all MapObjects
+        Returns: List of all SemanticMapObjects
         """
         return self.objects
 

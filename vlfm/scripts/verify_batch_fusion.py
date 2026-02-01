@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 sys.path.append("c:/Johns Hopkins/Capstone Project/codebase/vlfm")
 
 from vlfm.object_centric.object_detection import ObjectSegmenter
-from vlfm.object_centric.clip_encoder import CLIP
+from vlfm.object_centric.clip_encoder import CLIPClient
 from vlfm.object_centric.sam_detector import MobileSAMClient
 
 def test_pipeline():
@@ -24,7 +24,7 @@ def test_pipeline():
     print("Loading CLIP (ViT-H-14)... This may take a moment.")
     try:
         # Initialize lighter model for quick testing if possible, but user has ViT-H-14
-        encoder = CLIP(model_name="ViT-H-14", device=device)
+        encoder = CLIPClient()
         print("CLIP Loaded successfully.")
     except Exception as e:
         print(f"FAILED to load CLIP: {e}")

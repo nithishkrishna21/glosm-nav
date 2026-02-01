@@ -10,7 +10,7 @@ Key difference from ITMPolicy:
 
 Pipeline per timestep:
     1. Detect objects (SAM + SigLIP fusion) → List[Detection]
-    2. Update object map (association) → persistent MapObjects
+    2. Update object map (association) → persistent SemanticMapObjects
     3. Score visible objects against target text
     4. Project object scores onto value map
     5. Select best frontier using value map scores
@@ -31,7 +31,7 @@ from vlfm.policy.utils.acyclic_enforcer import AcyclicEnforcer
 
 # Our object-centric modules (Stage 1 & 2)
 from vlfm.object_centric.object_detection import ObjectSegmenter
-from vlfm.object_centric.object_map import ObjectMap, MapObject
+from vlfm.object_centric.object_map import SemanticMap, SemanticMapObject
 from vlfm.object_centric.sam_detector import MobileSAMClient
 from vlfm.object_centric.siglip2 import SigLIPClient
 from vlfm.object_centric.clip_encoder import CLIPClient
@@ -73,7 +73,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             min_points=16,  # Match ConceptGraphs min_points_threshold
         )
 
-        self.object_map = ObjectMap(
+        self.semantic_map = SemanticMap(
             similarity_threshold=0.7,
             geometric_sim_type="iou"
         )
@@ -100,7 +100,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
     def _reset(self) -> None:
         """Reset policy state for new episode."""
         super()._reset()
-        self.object_map.reset()
+        self.semantic_map.reset()
         self._value_map.reset()
         self._acyclic_enforcer = AcyclicEnforcer()
         self.target_text_features = None  # Reset for new episode
@@ -149,10 +149,10 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         print(f"DEBUG: Detected {len(detections)} objects this frame")
 
         # Step 3: Update object map
-        self.object_map.update(detections)
+        self.semantic_map.update(detections)
 
         # Step 4: Get visible objects and compute scores
-        visible_objects = self.object_map.get_visible_objects()
+        visible_objects = self.semantic_map.get_visible_objects()
         scores = self.compute_object_target_similarity(visible_objects, self.target_text_features)
         # print(f"DEBUG: {len(visible_objects)} visible objects in map, scores: {scores}\n")
 
@@ -191,18 +191,8 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             self._observations_cache["robot_xy"],
             self._observations_cache["robot_heading"]
         )
-        
-    def _update_object_map(self, *args, **kwargs) -> None:
-        """
-        Override parent's _update_object_map to prevent it from running 
-        the legacy GroundingDINO pipeline which causes crashes.
-        
-        Our object map is updated in _update_value_map instead.
-        """
-        pass
 
-    # originally the logic of ITMPolicyV2 is used here, 
-    # but since we inherit BaseITMPolicy, we need to overwrite this method
+    # Same implementation as ITMPolicyV2, but with debug statements
     def _sort_frontiers_by_value(
         self,
         observations: Any,
@@ -213,14 +203,14 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
 
         Same as ITMPolicyV2 - uses value map's sort_waypoints().
         """
-        sorted_frontiers, sorted_values = self._value_map.sort_waypoints(frontiers, 2.0)
+        sorted_frontiers, sorted_values = self._value_map.sort_waypoints(frontiers, 0.5)
         print(f"[DEBUG] Frontiers: {len(frontiers)}, Top 3 values: {sorted_values[:3] if len(sorted_values) > 0 else 'none'}")
         return sorted_frontiers, sorted_values
 
     # new logic
     def compute_object_target_similarity(
         self, 
-        visible_objects: List[MapObject],
+        visible_objects: List[SemanticMapObject],
         target_text_feats: torch.Tensor
     ) -> np.ndarray:
         """
