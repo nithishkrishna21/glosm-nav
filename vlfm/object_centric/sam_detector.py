@@ -14,7 +14,7 @@ from .server_wrapper import (
 )
 
 try:
-    from mobile_sam import sam_model_registry, SamAutomaticMaskGenerator
+    from mobile_sam import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
 except ModuleNotFoundError:
     print("Could not import mobile_sam. This is OK if you are only using the client.")
 
@@ -54,6 +54,15 @@ class SAMDetector:
             crop_n_layers=0,
             min_mask_region_area=100
         )
+        self.predictor = SamPredictor(mobile_sam)
+
+    def segment_bbox(self, image: np.ndarray, bbox: List[int]) -> np.ndarray:
+        """Segments the object in the given bounding box from the image (Legacy Support)."""
+        with torch.inference_mode():
+            self.predictor.set_image(image)
+            # MobileSAM predictor expects box as np.array([x1, y1, x2, y2])
+            masks, _, _ = self.predictor.predict(box=np.array(bbox), multimask_output=False)
+        return masks[0]
 
     def segment_image(self, image: np.ndarray) -> List[Dict]:
         """Segments the objects in the given image.
@@ -87,6 +96,13 @@ class MobileSAMClient:
 
         return masks
 
+    def segment_bbox(self, image: np.ndarray, bbox: List[int]) -> np.ndarray:
+        """Legacy method called by BaseObjectNavPolicy."""
+        response = send_request(self.url, image=image, bbox=bbox)
+        cropped_mask_str = response["cropped_mask"]
+        cropped_mask = str_to_bool_arr(cropped_mask_str, shape=tuple(image.shape[:2]))
+        return cropped_mask
+
 
 if __name__ == "__main__":
     import argparse
@@ -100,22 +116,29 @@ if __name__ == "__main__":
     class MobileSAMServer(ServerMixin, SAMDetector):
         def process_payload(self, payload: dict) -> dict:
             image = str_to_image(payload["image"])
-            masks = self.segment_image(image)
-
-            # Serialize each mask's segmentation array for JSON transmission
-            serialized_masks = []
-            for mask in masks:
-                serialized_mask = {
-                    'segmentation': bool_arr_to_str(mask['segmentation']),
-                    'bbox': mask['bbox'].tolist() if isinstance(mask['bbox'], np.ndarray) else mask['bbox'],
-                    'area': int(mask['area']),
-                    'predicted_iou': float(mask['predicted_iou']),
-                    'stability_score': float(mask['stability_score']),
-                    'crop_box': mask['crop_box'].tolist() if isinstance(mask['crop_box'], np.ndarray) else mask['crop_box'],
-                }
-                serialized_masks.append(serialized_mask)
-
-            return {"masks": serialized_masks, "shape": image.shape[:2]}
+            
+            # Dispatch based on payload content
+            if "bbox" in payload:
+                # Handle Legacy Request (from BaseObjectNavPolicy)
+                cropped_mask = self.segment_bbox(image, payload["bbox"])
+                cropped_mask_str = bool_arr_to_str(cropped_mask)
+                return {"cropped_mask": cropped_mask_str}
+            else:
+                # Handle New Request (from ObjectSegmenter)
+                masks = self.segment_image(image)
+                # Serialize each mask's segmentation array
+                serialized_masks = []
+                for mask in masks:
+                    serialized_mask = {
+                        'segmentation': bool_arr_to_str(mask['segmentation']),
+                        'bbox': mask['bbox'].tolist() if isinstance(mask['bbox'], np.ndarray) else mask['bbox'],
+                        'area': int(mask['area']),
+                        'predicted_iou': float(mask['predicted_iou']),
+                        'stability_score': float(mask['stability_score']),
+                        'crop_box': mask['crop_box'].tolist() if isinstance(mask['crop_box'], np.ndarray) else mask['crop_box'],
+                    }
+                    serialized_masks.append(serialized_mask)
+                return {"masks": serialized_masks, "shape": image.shape[:2]}
 
     mobile_sam = MobileSAMServer(sam_checkpoint=os.environ.get("MOBILE_SAM_CHECKPOINT", "data/mobile_sam.pt"))
     print("Model loaded!")
