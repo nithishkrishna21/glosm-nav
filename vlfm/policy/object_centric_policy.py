@@ -34,6 +34,7 @@ from vlfm.object_centric.object_detection import ObjectSegmenter
 from vlfm.object_centric.object_map import ObjectMap, MapObject
 from vlfm.object_centric.sam_detector import MobileSAMClient
 from vlfm.object_centric.siglip2 import SigLIPClient
+from vlfm.object_centric.clip_encoder import CLIPClient
 from habitat_baselines.common.baseline_registry import baseline_registry
 
 
@@ -52,28 +53,22 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         self,
         text_prompt: str,
         camera_intrinsics: np.ndarray,
+        encoder = None,
         *args: Any,
         **kwargs: Any,
     ):
         super().__init__(text_prompt=text_prompt, *args, **kwargs)
 
         self.mobile_sam_client = MobileSAMClient()
-        self.siglip_client = SigLIPClient()
-        
-        # Get calibration params for SigLIP probability
-        try:
-            params = self.siglip_client.get_model_params()
-            self.siglip_logit_scale = params.get("logit_scale")
-            self.siglip_logit_bias = params.get("logit_bias")
-            print(f"[ObjectCentricPolicy] Loaded SigLIP params: scale={self.siglip_logit_scale}, bias={self.siglip_logit_bias}")
-        except Exception as e:
-            print(f"[ObjectCentricPolicy] Warning: Could not fetch SigLIP params: {e}")
-            self.siglip_logit_scale = None
-            self.siglip_logit_bias = None
 
+        if encoder is None:
+            self.encoder = CLIPClient()
+        else:
+            self.encoder = encoder
+        
         self.object_segmenter = ObjectSegmenter(
             sam_detector=self.mobile_sam_client,
-            siglip=self.siglip_client,
+            encoder=self.encoder,
             camera_intrinsics=camera_intrinsics,
             min_points=16,  # Match ConceptGraphs min_points_threshold
         )
@@ -120,9 +115,9 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         if self.target_text_features is None and self._target_object:
             # Official SigLIP2 format from HuggingFace examples:
             # texts = ["a photo of 2 cats", "a photo of 2 dogs"]
-            siglip_prompt = f"a photo of a {self._target_object.lower()}"
-            self.target_text_features = self.siglip_client.encode_text(siglip_prompt).squeeze(0)  # [1, 768] -> [768]
-            print(f"[SigLIP] Encoded target: '{siglip_prompt}'")
+            prompt = f"a photo of a {self._target_object.lower()}"
+            self.target_text_features = self.encoder.encode_text(prompt).squeeze(0)  # [1, 768] -> [768]
+            print(f"[Encoder] Encoded target: '{prompt}'")
             # print(f"[DEBUG] Text features shape: {self.target_text_features.shape}")
             # print(f"[DEBUG] Text features norm: {torch.norm(self.target_text_features):.4f}")
             # print(f"[DEBUG] Text features sample: {self.target_text_features[:5]}\n")
@@ -136,7 +131,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
     # _cache_observations the super method is used
 
     # for _act, the implementation of ITMPolicyV2 is used here
-    # _cache_observations the super method is used
 
     def _update_value_map(self) -> None:
         """

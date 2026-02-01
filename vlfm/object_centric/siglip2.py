@@ -14,7 +14,7 @@ from .server_wrapper import (
 )
 
 try:
-    from transformers import AutoProcessor, AutoModel, AutoTokenizer
+    from transformers import AutoImageProcessor, AutoModel, AutoTokenizer
 except ModuleNotFoundError:
     print("Could not import transformers. This is OK if you are only using the client.")
 
@@ -24,7 +24,7 @@ class SigLIP:
 
     def __init__(
         self,
-        model_name: str = "google/siglip2-base-patch16-224",
+        model_name: str = "google/siglip2-so400m-patch16-512",
         device: Optional[Any] = None,
     ) -> None:
         if device is None:
@@ -34,17 +34,7 @@ class SigLIP:
         self.dtype = torch.float32
         self.model = AutoModel.from_pretrained(model_name, torch_dtype=self.dtype, device_map=self.device, trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-        
-        # Capture SigLIP's learned scale and bias for probability calibration
-        if hasattr(self.model, "logit_scale") and hasattr(self.model, "logit_bias"):
-            self.logit_scale = self.model.logit_scale.item()
-            self.logit_bias = self.model.logit_bias.item()
-        else:
-            # Fallback for models that might not have these specific attributes exposed similarly
-            print("WARNING: Could not find logit_scale/bias. Using raw cosine similarity.")
-            self.logit_scale = None
-            self.logit_bias = None
+        self.image_processor = AutoImageProcessor.from_pretrained(model_name, trust_remote_code=True)
 
     def encode_image(self, image: Union[np.ndarray, Image.Image]) -> np.ndarray:
         """
@@ -56,7 +46,7 @@ class SigLIP:
         Returns:
             image_features: np.ndarray of shape (1, output_dim)
         """
-        inputs = self.processor(images=image, return_tensors="pt").to(self.device)
+        inputs = self.image_processor(images=image, return_tensors="pt").to(self.device)
         with torch.inference_mode():
             image_features = self.model.get_image_features(**inputs)
             image_features = normalize(image_features, p = 2.0, dim = -1)
@@ -106,13 +96,6 @@ class SigLIP:
         # 1. Compute Raw Cosine Similarity
         cosine_sim = torch.nn.functional.cosine_similarity(image_features, text_features, dim = -1)
 
-        # 2. Apply SigLIP Calibration (if available) -> Probability
-        if self.logit_scale is not None and self.logit_bias is not None:
-             # logits = (cosine * exp(log_scale)) + bias
-             logits = (cosine_sim * np.exp(self.logit_scale)) + self.logit_bias
-             probability = torch.sigmoid(logits)
-             return float(probability.squeeze())
-        
         return float(cosine_sim.squeeze())
         
 
@@ -170,12 +153,6 @@ class SigLIPClient:
         
         return float(response["similarity"])
 
-    def get_model_params(self) -> dict:
-        """
-        Get model parameters from server.
-        """
-        response = send_request(self.url, request_type="get_model_params")
-        return response
 
 if __name__ == "__main__":
     import argparse
@@ -185,7 +162,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="google/siglip2-base-patch16-224",
+        default="google/siglip2-so400m-patch16-512",
         help="SigLIP2 model variant to use"
     )
     args = parser.parse_args()
@@ -230,13 +207,7 @@ if __name__ == "__main__":
                 }
 
                 return response
-            
-            elif request_type == "get_model_params":
-                return {
-                    "logit_scale": self.logit_scale,
-                    "logit_bias": self.logit_bias
-                }
-            
+
             else:
                 raise ValueError(f"Unknown request type: {request_type}")
 

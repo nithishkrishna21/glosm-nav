@@ -15,12 +15,12 @@ import cv2
 import numpy as np
 import torch
 from typing import List, Dict, Tuple, Optional
-# from sklearn.cluster import DBSCAN
 import open3d as o3d
 
 # Custom Wrappers (Client classes for HTTP communication with model servers)
 from .sam_detector import MobileSAMClient
 from .siglip2 import SigLIPClient
+from .clip_encoder import CLIPClient
 
 
 class Detection:
@@ -66,7 +66,8 @@ class ObjectSegmenter:
     def __init__(
         self,
         sam_detector: MobileSAMClient,  # MobileSAMClient instance (HTTP client)
-        siglip: SigLIPClient,           # SigLIPClient instance (HTTP client)
+        # siglip: SigLIPClient,           # SigLIPClient instance (HTTP client)
+        encoder: None,                   # Encoder model client instance (HTTP Client)
         camera_intrinsics: np.ndarray,  # 3×3 intrinsics matrix K
         min_points: int = 50,           # Minimum 3D points for valid object
         bbox_margin: int = 50,         # Margin to increase bounding box by
@@ -78,11 +79,16 @@ class ObjectSegmenter:
         Args:
             sam_detector: MobileSAMClient instance for mask generation (connects to SAM server)
             siglip: SigLIPClient instance for feature extraction (connects to SigLIP server)
+            encoder: Encoder instance for feature extraction (connects to the corresponding encoder server)
             camera_intrinsics: 3×3 camera intrinsics matrix K
             min_points: Filter out objects with fewer 3D points
         """
         self.sam_detector = sam_detector
-        self.siglip = siglip
+        # self.siglip = siglip
+        if encoder is None:
+            self.encoder = CLIPClient
+        else:
+            self.encoder = encoder
         self.camera_intrinsics = camera_intrinsics
         self.min_points = min_points
         self.bbox_margin = bbox_margin
@@ -127,16 +133,18 @@ class ObjectSegmenter:
 
         global_features = self._extract_global_features(rgb)
 
-
         # ══════════════════════════════════════════════════════════════
-        # STEP 3: Process each detected mask
+        # STEP 3: Get all the valid masks, crops, features and point clouds
         # ══════════════════════════════════════════════════════════════
-        detections = []
 
+        valid_masks = []
+        crop_bboxes, crop_masked_bboxes = [], []
+        point_clouds = []
+
+        # for every mask
         for mask_data in masks:
-            mask = mask_data['segmentation']  # (H, W) binary
-            bbox = mask_data['bbox']          # (x, y, w, h)
-            confidence = mask_data['predicted_iou'] # float score
+            mask = mask_data['segmentation']
+            bbox = mask_data['bbox']
 
             # ──────────────────────────────────────────────────────────
             # STEP 3a: Extract 3 crops for HOV-SG fusion
@@ -144,44 +152,18 @@ class ObjectSegmenter:
 
             crop_bbox = self._create_bbox_crop(rgb, bbox, bbox_margin=self.bbox_margin)
             crop_masked_bbox = self._create_masked_crop(rgb, mask, bbox)
-            
-            # Skip if either crop is empty
-            if crop_bbox.size == 0 or crop_masked_bbox.size == 0:
+
+            # skip if either crop is empty
+            if crop_bbox.size == 0 or crop_masked_bbox.size() == 0:
                 continue
-                
+
+            # resize the crops to 512x512
             crop_bbox = cv2.resize(crop_bbox, (512, 512))
             crop_masked_bbox = cv2.resize(crop_masked_bbox, (512, 512))
 
-
-
             # ──────────────────────────────────────────────────────────
-            # STEP 3b: Extract features for local crops using SigLIP
-            # ──────────────────────────────────────────────────────────
-
-            cropped_feats = self._extract_features(crop_bbox)
-            cropped_masked_feats = self._extract_features(crop_masked_bbox)
-
-
-            # ──────────────────────────────────────────────────────────
-            # STEP 3c: HOV-SG weighted fusion
-            # ──────────────────────────────────────────────────────────
-
-            # fused_features = self._fuse_features(
-            #     global_features,
-            #     cropped_feats,
-            #     cropped_masked_feats
-            # )
-            
-            # DEBUG: Use ONLY Masked features (Strongest signal hypothesis)
-            # Crop=0.05, (Crop+Mask)/2=0.10 => Mask must be ~0.15
-            fused_features = cropped_masked_feats
-
-            # fused_features = global_features
-
-
-            # ──────────────────────────────────────────────────────────
-            # STEP 3d: Project mask to 3D point cloud
-            # ──────────────────────────────────────────────────────────
+            # STEP 3b: Obtain the point cloud for the mask
+            # ────────────────────────────────────────────────────────── 
 
             point_cloud_camera = self._depth_to_pointcloud(
                 depth, mask, self.camera_intrinsics
@@ -190,30 +172,126 @@ class ObjectSegmenter:
             # Transform to world frame
             point_cloud_world = self._transform_to_world(
                 point_cloud_camera, camera_pose
-            )
+            )   
 
-            # Filter: minimum points threshold
-            num_points = len(point_cloud_world.points)
-            if num_points < self.min_points:
-                # print(f"DEBUG: Rejecting mask (only {num_points} points, need {self.min_points})")
+            # skip if the point cloud doesnt meet the min requirement
+            if len(point_cloud_world.points) < self.min_points:
                 continue
-            # print(f"DEBUG: Accepting mask with {num_points} points")
 
+            # push the valid mask, crops and point cloud
+            valid_masks.append(mask_data)
+            crop_bboxes.append(crop_bbox)
+            crop_masked_bboxes.append(crop_masked_bbox)
+            point_clouds.append(point_cloud_world)        
 
-            # ──────────────────────────────────────────────────────────
-            # STEP 3e: Create Detection object
-            # ──────────────────────────────────────────────────────────
+        # ══════════════════════════════════════════════════════════════
+        # STEP 4: Obtain the features for crops and masked crops of valid masks
+        # ══════════════════════════════════════════════════════════════        
+
+        cropped_feats = self._extract_features(np.stack(crop_bboxes))
+        cropped_masked_feats = self._extract_features(np.stack(crop_masked_bboxes))
+
+        # ══════════════════════════════════════════════════════════════
+        # STEP 5: Fuse the features
+        # ══════════════════════════════════════════════════════════════    
+
+        fused_feats = self._fuse_features(global_features, cropped_feats, cropped_masked_feats)
+
+        # ══════════════════════════════════════════════════════════════
+        # STEP 6: Create detections
+        # ══════════════════════════════════════════════════════════════ 
+        detections = []
+        for i, mask_data in enumerate(valid_masks):
             detection = Detection(
-                mask=mask,
-                bbox=bbox,
-                features=fused_features,
-                point_cloud=point_cloud_world,
-                confidence=confidence
+                mask=mask_data['segmentation'],
+                bbox=mask_data['bbox'],
+                features=fused_feats[i],
+                point_cloud=point_clouds[i],
+                confidence=mask_data['predicted_iou']
             )
             detections.append(detection)
 
-        return detections
+        return detections        
 
+        # # ══════════════════════════════════════════════════════════════
+        # # STEP 3: Process each detected mask
+        # # ══════════════════════════════════════════════════════════════
+        # detections = []
+
+        # for mask_data in masks:
+        #     mask = mask_data['segmentation']  # (H, W) binary
+        #     bbox = mask_data['bbox']          # (x, y, w, h)
+        #     confidence = mask_data['predicted_iou'] # float score
+
+        #     # ──────────────────────────────────────────────────────────
+        #     # STEP 3a: Extract 3 crops for HOV-SG fusion
+        #     # ──────────────────────────────────────────────────────────
+
+        #     crop_bbox = self._create_bbox_crop(rgb, bbox, bbox_margin=self.bbox_margin)
+        #     crop_masked_bbox = self._create_masked_crop(rgb, mask, bbox)
+            
+        #     # Skip if either crop is empty
+        #     if crop_bbox.size == 0 or crop_masked_bbox.size == 0:
+        #         continue
+                
+        #     crop_bbox = cv2.resize(crop_bbox, (512, 512))
+        #     crop_masked_bbox = cv2.resize(crop_masked_bbox, (512, 512))
+
+
+
+        #     # ──────────────────────────────────────────────────────────
+        #     # STEP 3b: Extract features for local crops using SigLIP
+        #     # ──────────────────────────────────────────────────────────
+
+        #     cropped_feats = self._extract_features(crop_bbox)
+        #     cropped_masked_feats = self._extract_features(crop_masked_bbox)
+
+
+        #     # ──────────────────────────────────────────────────────────
+        #     # STEP 3c: HOV-SG weighted fusion
+        #     # ──────────────────────────────────────────────────────────
+
+        #     fused_features = self._fuse_features(
+        #         global_features,
+        #         cropped_feats,
+        #         cropped_masked_feats
+        #     )
+
+
+        #     # ──────────────────────────────────────────────────────────
+        #     # STEP 3d: Project mask to 3D point cloud
+        #     # ──────────────────────────────────────────────────────────
+
+        #     point_cloud_camera = self._depth_to_pointcloud(
+        #         depth, mask, self.camera_intrinsics
+        #     )
+
+        #     # Transform to world frame
+        #     point_cloud_world = self._transform_to_world(
+        #         point_cloud_camera, camera_pose
+        #     )
+
+        #     # Filter: minimum points threshold
+        #     num_points = len(point_cloud_world.points)
+        #     if num_points < self.min_points:
+        #         # print(f"DEBUG: Rejecting mask (only {num_points} points, need {self.min_points})")
+        #         continue
+        #     # print(f"DEBUG: Accepting mask with {num_points} points")
+
+
+        #     # ──────────────────────────────────────────────────────────
+        #     # STEP 3e: Create Detection object
+        #     # ──────────────────────────────────────────────────────────
+        #     detection = Detection(
+        #         mask=mask,
+        #         bbox=bbox,
+        #         features=fused_features,
+        #         point_cloud=point_cloud_world,
+        #         confidence=confidence
+        #     )
+        #     detections.append(detection)
+
+        # return detections
 
     # ══════════════════════════════════════════════════════════════════
     # Helper Methods
@@ -236,11 +314,12 @@ class ObjectSegmenter:
 
     def _extract_global_features(self, rgb: np.ndarray) -> np.ndarray:
         """
-        Extract features from full RGB image using SigLIP.
+        Extract features from full RGB image using encoder.
 
         Returns: (1, D) feature vector 
         """
-        return self.siglip.encode_image(rgb)
+        # return self.siglip.encode_image(rgb)
+        return self.encoder.encode_image(rgb)
     
     def increase_bbox_by_margin(self, bbox, margin):
         """
@@ -301,45 +380,43 @@ class ObjectSegmenter:
 
     def _extract_features(self, crop: np.ndarray) -> np.ndarray:
         """
-        Extract features from a crop using SigLIP.
+        Extract features from a crop using encoder.
 
-        Returns: (1, D) feature vector
+        Returns: (1, D) feature vector for a single crop and
+                 (N, D) feature vector for N crops
         """
-        return self.siglip.encode_image(crop)
+        # return self.siglip.encode_image(crop)
+        return self.encoder.encode_image(crop)
 
 
     def _fuse_features(
         self,
         F_g: torch.Tensor,      # (1, D)
-        cropped_feats: torch.Tensor,        # (1, D) - "unmasked" in HOV-SG
-        cropped_masked_feats: torch.Tensor  # (1, D) - "masked" in HOV-SG
+        cropped_feats: torch.Tensor,        # (N, D) - "unmasked" in HOV-SG
+        cropped_masked_feats: torch.Tensor  # (N, D) - "masked" in HOV-SG
     ) -> torch.Tensor:
         """
         Perform HOV-SG 2-stage weighted fusion.
 
-        Returns: (1, D) fused feature vector
+        Returns: (N, D) fused feature vector
         """
-
-        # F_g = torch.from_numpy(F_g).float()
-        # cropped_feats = torch.from_numpy(cropped_feats).float()
-        # cropped_masked_feats = torch.from_numpy(cropped_masked_feats).float()
 
         fused_crop_feats = self.masked_weight * cropped_masked_feats + (1- self.masked_weight) * cropped_feats    
 
         F_l = torch.nn.functional.normalize(fused_crop_feats, p=2, dim=-1)
 
         # 1. Compute the cosine similarity between the local feature F_l and global feature F_g
+        F_g = F_g.repeat(len(F_l), 1)
         cos = torch.nn.CosineSimilarity(dim=-1, eps=1e-6)
         phi_l_G = cos(F_l, F_g)
-        w_i = torch.sigmoid(phi_l_G).reshape(-1, 1)
+        w_i = torch.softmax(phi_l_G, dim=0).unsqueeze(1)
 
         # 2. Compute the final fused feature F_fused
         F_fused = w_i * F_g + (1 - w_i) * F_l
         F_fused = torch.nn.functional.normalize(F_fused, p=2, dim=-1)
-        # F_fused = F_fused.cpu().numpy()
         
-        # Squeeze to remove batch dimension: [1, 768] -> [768]
-        return F_fused.squeeze(0).float().to(self.device)
+        # Return (N, D)
+        return F_fused.float().to(self.device)
 
     def _depth_to_pointcloud(
         self,
