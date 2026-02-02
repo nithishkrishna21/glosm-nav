@@ -14,7 +14,8 @@ export GROUNDING_DINO_PORT=${GROUNDING_DINO_PORT:-12181}
 # export BLIP2ITM_PORT=${BLIP2ITM_PORT:-12182}  # Commented out - using SigLIP2 instead
 export SAM_PORT=${SAM_PORT:-12183}
 export YOLOV7_PORT=${YOLOV7_PORT:-12184}  # Changed from 12186 to match code expectations
-export SIGLIP2_PORT=${SIGLIP2_PORT:-12185}  # Changed from 12184 to avoid conflict
+# export SIGLIP2_PORT=${SIGLIP2_PORT:-12185}  # Changed from 12184 to avoid conflict
+export CLIP_PORT=${CLIP_PORT:-12186}
 
 session_name=vlm_servers_${RANDOM}
 
@@ -30,7 +31,8 @@ tmux split-window -h -t ${session_name}:0.2
 # Using vlfm_v2 environment for all models (upgraded PyTorch + transformers for SigLIP2)
 tmux send-keys -t ${session_name}:0.0 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.grounding_dino --port ${GROUNDING_DINO_PORT}" C-m
 # tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.blip2itm --port ${BLIP2ITM_PORT}" C-m  # Commented out
-tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.siglip2 --port ${SIGLIP2_PORT}" C-m
+# tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.siglip2 --port ${SIGLIP2_PORT}" C-m
+tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.clip_encoder --port ${CLIP_PORT}" C-m
 tmux send-keys -t ${session_name}:0.2 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.sam_detector --port ${SAM_PORT}" C-m
 tmux send-keys -t ${session_name}:0.3 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.yolov7 --port ${YOLOV7_PORT}" C-m
 
@@ -39,7 +41,8 @@ echo "Created tmux session '${session_name}'. You must wait up to 90 seconds for
 echo ""
 echo "Model servers:"
 echo "  - Grounding DINO: localhost:${GROUNDING_DINO_PORT}"
-echo "  - SigLIP2:        localhost:${SIGLIP2_PORT}  (replaces BLIP2)"
+# echo "  - SigLIP2:        localhost:${SIGLIP2_PORT}  (replaces BLIP2)"
+echo "  - CLIP:           localhost:${CLIP_PORT}     (replaces SigLIP2)"
 echo "  - SAM:            localhost:${SAM_PORT}"
 echo "  - YOLOv7:         localhost:${YOLOV7_PORT}"
 echo ""

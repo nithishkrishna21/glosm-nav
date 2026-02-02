@@ -234,269 +234,96 @@ This verifies object detections by asking "Is this a [object]?" to reduce false 
 1. BLIP2-ITM has separate vision and text encoders
 2. Both encoders output embeddings in the same aligned space
 3. Cosine similarity measures how well image matches text
-4. Higher scores indicate better match between frontier view and target object
-5. VLFM uses these scores to guide exploration toward the goal
+1.  BLIP2-ITM has separate vision and text encoders
+2.  Both encoders output embeddings in the same aligned space
+3.  Cosine similarity measures how well image matches text
+4.  Higher scores indicate better match between frontier view and target object
+5.  VLFM uses these scores to guide exploration toward the goal
 
 ---
 
-## Section 3: Implementation Options for Proposed Methodology
+## Section 3: Implementation Options
 
-### Option 1: SigLIP 2 (Latest from Google - February 2025)
+### Option 1: OpenCLIP (Current Implementation)
 
 #### Overview
 
-Google's newest vision-language encoder, released February 2025. SigLIP 2 extends the original SigLIP with improved semantic understanding, localization, and dense features.
+We have standardized on the `open_clip` library, which serves as a unified interface for accessing a vast array of state-of-the-art vision-language models. This is our **active implementation**.
 
 #### Key Advantages
 
-1. **State-of-the-art Performance**: Outperforms SigLIP and CLIP at all model scales
-2. **Recent Release**: Literally cutting-edge (Feb 2025)
-3. **Better Capabilities**: Improved zero-shot classification, image-text retrieval, and VLM transfer
-4. **Multilingual Support**: Enhanced multilingual vision-language understanding
-5. **Easy Integration**: Available on HuggingFace with simple API
+1.  **Massive Model Selection**: Access to OpenAI CLIP, LAION-2B models, DataComp, EVA-CLIP, and DFN.
+2.  **Unified API**: Switch between architectures (e.g., `ViT-B-32` vs `ViT-H-14`) by changing a single string argument.
+3.  **Optimization**: Supports Flash Attention and other speedups natively.
+4.  **Community Standard**: The `laion2b_s34b_b79k` weights are the gold standard for Zero-Shot retrieval.
 
-#### Implementation Workflow
+#### Implementation Status
 
-```python
-# Similar to ImageBind workflow
-from transformers import AutoModel, AutoProcessor
+-   **Implemented**: `vlfm/object_centric/clip_encoder.py`
+-   **Deployed**: `vlfm/scripts/launch_vlm_servers_v2.sh` (Port 12186)
+-   **Model**: Defaulting to `ViT-H-14` (Huge) for maximum accuracy.
 
-# Load SigLIP 2
-processor = AutoProcessor.from_pretrained("google/siglip2-...")
-model = AutoModel.from_pretrained("google/siglip2-...")
+---
 
-# 1. Extract features from 3 crops per object
-feat_full = model.get_image_features(processor(full_image))
-feat_crop_bg = model.get_image_features(processor(crop_with_bg))
-feat_crop_no_bg = model.get_image_features(processor(crop_no_bg))
-
-# 2. Weighted fusion
-object_features = (w1*feat_full + w2*feat_crop_bg + w3*feat_crop_no_bg)
-object_features = object_features / object_features.norm(dim=-1, keepdim=True)
-
-# 3. Encode target
-target_features = model.get_text_features(processor(text="bed"))
-
-# 4. Score
-score = (object_features @ target_features.T).item()
-```
-
-#### Pros
-- Latest model (Feb 2025), most recent research
-- Better than CLIP and original SigLIP
-- Production-ready, well-supported
-- HuggingFace integration
-
-#### Cons
-- Very new (less community testing than CLIP)
-- Not DINOv2/v3 based (standard vision encoder)
-
-#### When to Use
-- If you want the latest and best vision-language model
-- If you prefer proven Google models over Meta
-- For maximum performance without DINOv2 requirement
-
-#### References
-- [SigLIP 2 ArXiv Paper](https://arxiv.org/pdf/2502.14786)
-- [HuggingFace Blog](https://huggingface.co/blog/siglip2)
-
-### Option 2: ImageBind (Recommended)
-
-#### Why ImageBind?
-
-**ImageBind** is Meta's multimodal alignment model that:
-- Uses **DINOv2** as its vision backbone (similar quality to DINOv3)
-- Has pre-trained **vision-text alignment** (no training needed)
-- Supports multi-view feature fusion workflow
-- Provides separate `encode_vision()` and `encode_text()` methods
-
-#### Key Advantages
-
-1. **Meta Ecosystem**: Same research group as DINOv3/SAM
-2. **Strong Visual Features**: DINOv2-based encoder provides rich object representations
-3. **Pre-aligned Embeddings**: Vision and text features already in same space
-4. **Flexible API**: Can extract features separately for fusion
-
-#### Implementation Workflow
-
-```python
-from imagebind import data
-import torch
-from imagebind.models import imagebind_model
-from imagebind.models.imagebind_model import ModalityType
-
-# Load model (one-time setup)
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
-model = imagebind_model.imagebind_huge(pretrained=True)
-model.eval()
-model.to(device)
-
-# 1. Extract features from 3 crops per object
-# Note: load_and_transform_vision_data expects file paths or PIL images
-inputs_full = {
-    ModalityType.VISION: data.load_and_transform_vision_data([full_image], device)
-}
-inputs_crop_bg = {
-    ModalityType.VISION: data.load_and_transform_vision_data([crop_with_bg], device)
-}
-inputs_crop_no_bg = {
-    ModalityType.VISION: data.load_and_transform_vision_data([crop_no_bg], device)
-}
-
-with torch.no_grad():
-    feat_full = model(inputs_full)[ModalityType.VISION]          # Shape: [1, D]
-    feat_crop_bg = model(inputs_crop_bg)[ModalityType.VISION]     # Shape: [1, D]
-    feat_crop_no_bg = model(inputs_crop_no_bg)[ModalityType.VISION]  # Shape: [1, D]
-
-# 2. Weighted fusion (HOV-SG style)
-weights = [w1, w2, w3]  # e.g., [0.3, 0.3, 0.4]
-object_features = (weights[0] * feat_full +
-                   weights[1] * feat_crop_bg +
-                   weights[2] * feat_crop_no_bg)
-
-# 3. Normalize fused features
-object_features = object_features / object_features.norm(dim=-1, keepdim=True)
-
-# 4. Encode target once at episode start
-text_input = {
-    ModalityType.TEXT: data.load_and_transform_text(["bed"], device)
-}
-with torch.no_grad():
-    target_features = model(text_input)[ModalityType.TEXT]  # Shape: [1, D]
-
-# 5. Score objects each timestep
-score = (object_features @ target_features.T).item()
-```
-
-#### Wrapper Class Design (Optional)
-
-For easier integration with VLFM's server-client pattern, you can wrap ImageBind:
-
-```python
-from imagebind import data
-import torch
-from imagebind.models import imagebind_model
-from imagebind.models.imagebind_model import ModalityType
-import numpy as np
-from typing import Optional, Any
-
-class ImageBindWrapper:
-    def __init__(self, device: Optional[str] = None):
-        if device is None:
-            device = "cuda:0" if torch.cuda.is_available() else "cpu"
-
-        self.device = device
-        self.model = imagebind_model.imagebind_huge(pretrained=True)
-        self.model.eval()
-        self.model.to(device)
-
-    def encode_vision(self, image: np.ndarray) -> torch.Tensor:
-        """Extract normalized image features"""
-        # Convert numpy array to format expected by ImageBind
-        # Note: May need to save temporarily or convert to PIL
-        inputs = {
-            ModalityType.VISION: data.load_and_transform_vision_data([image], self.device)
-        }
-        with torch.no_grad():
-            embeddings = self.model(inputs)
-        return embeddings[ModalityType.VISION]  # Shape: [1, D]
-
-    def encode_text(self, text: str) -> torch.Tensor:
-        """Extract normalized text features"""
-        inputs = {
-            ModalityType.TEXT: data.load_and_transform_text([text], self.device)
-        }
-        with torch.no_grad():
-            embeddings = self.model(inputs)
-        return embeddings[ModalityType.TEXT]  # Shape: [1, D]
-
-    def cosine(self, image: np.ndarray, text: str) -> float:
-        """Convenience method for single-image scoring"""
-        img_feat = self.encode_vision(image)
-        txt_feat = self.encode_text(text)
-        return (img_feat @ txt_feat.T).item()
-```
-
-**Note**: ImageBind's `load_and_transform_vision_data()` expects file paths or PIL Images. You may need to convert numpy arrays or save temporarily.
-
-#### Integration with VLFM
-
-1. **Replace BLIP2ITMClient** with ImageBindClient
-2. **Modify object detection loop** to extract 3 crops per object
-3. **Add fusion step** before storing object features
-4. **Keep everything else unchanged**: value map projection, confidence weighting, frontier selection
-
-### Option 3: CLIP (Baseline)
+### Option 2: MetaCLIP (Recommended Upgrade)
 
 #### Overview
 
-The original vision-language model from OpenAI. Well-established baseline, but superseded by newer models.
+MetaCLIP (by Meta AI) uses the standard CLIP architecture but is trained on a rigorously curated dataset to remove noise and biases found in LAION/OpenAI data. Matches or beats OpenAI weights while being fully compatible with the OpenCLIP ecosystem.
 
-#### Pros
-- Most well-known and tested
-- Extensive documentation and community support
-- Many pre-trained variants (OpenCLIP)
-- Lightest weight option
+#### Which Version?
+-   **MetaCLIP v1 (Recommended)**: Released late 2023. English-focused, cleaner data. Perfect for this project.
+-   **MetaCLIP v2**: Released mid-2025. Focused on **Worldwide/Multilingual** scaling. Unless you need to navigate in non-English environments, this is overkill.
 
-#### Cons
-- Older (2021)
-- Outperformed by SigLIP 2, ImageBind
-- Vision features not as strong as DINOv2-based models
+#### How to Switch (MetaCLIP v1)
 
-#### When to Use
-- As a baseline for comparison
-- If you need maximum stability and community support
-- For quick prototyping before switching to better models
+In `launch_vlm_servers_v2.sh`:
+```bash
+# Old
+--model_name ViT-H-14 --pretrained laion2b_s34b_b79k
 
-### Option 4: DINOv3 + DINOv3-CLIP Adapter
+# New (MetaCLIP v1 - High Performance)
+--model_name ViT-H-14-quickgelu --pretrained metaclip_fullcc
+```
+
+---
+
+### Option 3: SigLIP 2 (Google's Alternative)
 
 #### Overview
 
-Use actual DINOv3 for vision features with a lightweight MLP adapter (3.15M parameters) that maps DINOv3 embeddings into CLIP's image space, enabling text alignment.
+Google's generic Vision-Language Model using Sigmoid Loss for Image-Text Pre-training. Released Feb 2025. It is superior at handling dense images with multiple concepts because naturally "multi-label" (Sigmoid) rather than "one-of-many" (Softmax).
+
+#### Status
+
+-   **Implemented**: `vlfm/object_centric/siglip2.py`
+-   **Shelved**: We moved to OpenCLIP for easier alignment with HOV-SG fusion weights, but this remains a strong backup if we need better dense scene understanding.
+
+#### When to Use
+-   If the agent struggles to distinguish multiple objects in a single crop.
+-   If we want to leverage Google's latest multilingual capabilities.
+
+---
+
+### Option 4: DINOv3 + DINOv3-CLIP Adapter (Structure-First)
+
+#### Overview
+
+Use actual DINOv3 (Visual Foundation Model) for vision features, piped through a lightweight MLP adapter (3.15M parameters) to align them with CLIP's text space.
 
 #### How It Works
 
-1. **Frozen DINOv3**: Extract rich visual features
-2. **Lightweight Adapter**: Maps DINOv3 → CLIP image space (pre-trained, 3.15M params)
-3. **CLIP Text Encoder**: Standard CLIP for text features
-4. **Compute Similarity**: Cosine similarity in CLIP's aligned space
+1.  **Frozen DINOv3**: Extract rich, structure-aware visual features (great for geometry/parts).
+2.  **Adapter**: Maps DINOv3 $\to$ CLIP Space.
+3.  **CLIP Text**: Use standard CLIP to encode text.
 
-#### Pros
-- **Actual DINOv3**: Get the DINOv3 features you originally wanted
-- **Pre-trained adapter**: No training required
-- **Lightweight**: Only 3.15M adapter parameters
-- **Proven approach**: Published work with available code
-
-#### Cons
-- **Performance gap**: Not as good as end-to-end trained models (SigLIP 2, ImageBind)
-- **Domain sensitivity**: Works best on in-domain images (but indoor robotics likely is in-domain)
-- **Open vocab limitations**: Out-of-domain labels can get inflated scores
-- **Two-stage**: DINOv3 → adapter → CLIP space (more complexity)
-
-#### Important Caveat
-
-⚠️ The adapter was trained on images only (never saw text). Rankings are usually sensible for in-domain images, but out-of-domain text labels may score unexpectedly high.
-
-**For your use case**: Indoor navigation with specific objects ("bed", "chair") should be in-domain, so rankings should be reliable.
+#### Pros & Cons
+-   **Pros**: Access to DINO's superior segmentation/part-awareness.
+-   **Cons**: The adapter is a bottleneck. It was trained on images, so "Zero-Shot" text retrieval is less robust than end-to-end trained models like OpenCLIP or SigLIP.
 
 #### When to Use
-- If you specifically need DINOv3 features (not DINOv2)
-- If DINOv3's visual quality is critical for your research
-- For experimental comparison vs other models
-
-#### References
-- [DINOv3-CLIP GitHub](https://github.com/duriantaco/dinov3clip)
-
-### Recommendation Summary
-
-| Option | Difficulty | Performance | Speed | Vision Backbone | Best For |
-|--------|-----------|-------------|-------|----------------|----------|
-| **SigLIP 2** | Easy | Very High | Fast | Standard ViT | **Recommended: Latest SOTA** |
-| **ImageBind** | Easy | High | Fast | DINOv2 | Balanced choice, DINOv2 features |
-| **CLIP** | Very Easy | Medium | Very Fast | Standard ViT | Baseline, prototyping |
-| **DINOv3-CLIP** | Medium | Medium-High* | Fast | DINOv3 | If you must have DINOv3 |
-
-*Performance depends on domain match
+-   If we find that CLIP/SigLIP can *find* the object but fails to *segment* it accurately.
+-   For experimental comparison.
 
 ---
 

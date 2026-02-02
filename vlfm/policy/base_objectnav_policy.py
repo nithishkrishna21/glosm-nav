@@ -18,7 +18,8 @@ from vlfm.utils.geometry_utils import get_fov, rho_theta
 from vlfm.vlm.blip2 import BLIP2Client
 from vlfm.vlm.coco_classes import COCO_CLASSES
 from vlfm.vlm.grounding_dino import GroundingDINOClient, ObjectDetections
-from vlfm.vlm.sam import MobileSAMClient
+# from vlfm.vlm.sam import MobileSAMClient
+from vlfm.object_centric.sam_detector import MobileSAMClient
 from vlfm.vlm.yolov7 import YOLOv7Client
 
 try:
