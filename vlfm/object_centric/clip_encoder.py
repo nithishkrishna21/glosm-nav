@@ -5,7 +5,10 @@ import numpy as np
 import torch
 from torch.nn.functional import normalize
 from PIL import Image
-import open_clip
+try:
+    import open_clip
+except ImportError:
+    open_clip = None
 
 from .server_wrapper import (
     ServerMixin,
@@ -25,7 +28,7 @@ class CLIP:
     def __init__(
         self,
         model_name: str = "ViT-H-14",
-        pretrained: str = "laion2b_s34b_b79k",
+        pretrained: str = "laion2b_s32b_b79k",
         device: Optional[Any] = None
     ) -> None:
         if device is None:
@@ -35,6 +38,7 @@ class CLIP:
 
         self.model, _, self.image_processor = open_clip.create_model_and_transforms(model_name, 
                                             pretrained=pretrained)
+        self.model.to(self.device)
 
         self.tokenizer = open_clip.get_tokenizer(model_name)
 
@@ -98,7 +102,7 @@ class CLIP:
         """
 
         with torch.no_grad():
-            text = self.tokenizer([text])
+            text = self.tokenizer([text]).to(self.device)
             text_features = self.model.encode_text(text)
             text_features = normalize(text_features, p=2, dim=-1)
             text_features = np.float32(text_features.cpu())
@@ -127,42 +131,55 @@ class CLIP:
         return float(cosine_sim.squeeze())
 
 
-    class CLIPClient:
-        def __init__(self, port: int = None, device = None):
-            if port is None:
-                port = int(os.environ.get("CLIP_PORT", "12186"))
-            self.url = f"http://localhost:{port}/clip"
-            if device is None:
-                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            else:
-                self.device = device
 
-        def encode_image(self, image: np.ndarray) -> torch.Tensor:
-            """
-            Extract image features via server.
+class CLIPClient:
+    def __init__(self, port: int = None, device = None):
+        if port is None:
+            port = int(os.environ.get("CLIP_PORT", "12186"))
+        self.url = f"http://localhost:{port}/clip"
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = device
 
-            Returns: (1, D) feature vector as torch.Tensor
-            """
+    def encode_image(self, image: np.ndarray) -> torch.Tensor:
+        """
+        Extract image features via server.
 
-            response = send_request(self.url,
-                                    request_type = "encode_image",
-                                    image = image)
+        Returns: (1, D) feature vector as torch.Tensor
+        """
+        # Handle batch of images
+        if image.ndim == 4:
+            features = []
+            for i in range(image.shape[0]):
+                response = send_request(self.url,
+                                        request_type = "encode_image",
+                                        image = image[i])
+                features.append(torch.Tensor(response["image_features"]).float())
+            
+            return torch.cat(features, dim=0).to(self.device)
+        
+        # Handle single image
+        response = send_request(self.url,
+                                request_type = "encode_image",
+                                image = image)
 
-            # return np.array(response["image_features"], dtype=np.float32)
-            return torch.Tensor(response["image_features"]).float().to(self.device)
+        # return np.array(response["image_features"], dtype=np.float32)
+        return torch.Tensor(response["image_features"]).float().to(self.device)
 
-        def encode_text(self, text: str) -> torch.Tensor:
-            """
-            Extract text features via server.
+    def encode_text(self, text: str) -> torch.Tensor:
+        """
+        Extract text features via server.
 
-            Returns: (1, D) feature vector as torch.Tensor
-            """
-            response = send_request(self.url,
-                                    request_type = "encode_text",
-                                    text = text)
+        Returns: (1, D) feature vector as torch.Tensor
+        """
+        response = send_request(self.url,
+                                request_type = "encode_text",
+                                text = text)
 
-            # return np.array(response["text_features"], dtype=np.float32)
-            return torch.Tensor(response["text_features"]).float().to(self.device)
+        # return np.array(response["text_features"], dtype=np.float32)
+        return torch.Tensor(response["text_features"]).float().to(self.device)
+
 
 if __name__ == "__main__":
     import argparse
@@ -178,7 +195,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pretrained",
         type=str,
-        default="laion2b_s34b_b79k",
+        default="laion2b_s32b_b79k",
         help="pretrained weights to use"
     )
     args = parser.parse_args()

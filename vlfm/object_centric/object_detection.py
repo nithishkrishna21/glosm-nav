@@ -154,7 +154,7 @@ class ObjectSegmenter:
             crop_masked_bbox = self._create_masked_crop(rgb, mask, bbox)
 
             # skip if either crop is empty
-            if crop_bbox.size == 0 or crop_masked_bbox.size() == 0:
+            if crop_bbox.size == 0 or crop_masked_bbox.size == 0:
                 continue
 
             # resize the crops to 512x512
@@ -187,6 +187,9 @@ class ObjectSegmenter:
         # ══════════════════════════════════════════════════════════════
         # STEP 4: Obtain the features for crops and masked crops of valid masks
         # ══════════════════════════════════════════════════════════════        
+
+        if not crop_bboxes:
+            return []
 
         cropped_feats = self._extract_features(np.stack(crop_bboxes))
         cropped_masked_feats = self._extract_features(np.stack(crop_masked_bboxes))

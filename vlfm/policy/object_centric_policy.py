@@ -234,7 +234,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # DEBUG: Print stats
         if len(scores) > 0:
             print(f"[DEBUG] Scores - Max Cosine: {raw_cosine.max():.4f}")
-            if scores.max() > 0.1:
-                print(f"[DEBUG] FOUND CANDIDATE! Score: {scores.max():.4f}")
+            # if scores.max() > 0.1:
+            #     print(f"[DEBUG] FOUND CANDIDATE! Score: {scores.max():.4f}")
 
         return np.float32(scores.squeeze(-1).cpu())
