@@ -10,7 +10,19 @@ Our approach builds upon VLFM by replacing frontier-based scoring with object-ce
 
 #### Step 1: Object Detection & Feature Extraction
 
-1. **Segmentation**: Use Mobile-SAM to segment RGB images into 2D object masks
+**Implementation Variants:**
+*   **V2 (Parallel Pipeline - Current)**: Runs independent loops.
+    *   *Loop A*: GroundingDINO detects target for stopping logic.
+    *   *Loop B*: MobileSAM (Grid Mode) segments entire image for scoring logic.
+    *   *Pros*: Modular, zero-risk integration. *Cons*: Redundant compute (slow).
+*   **V3 (Optimized Pipeline - Planned)**: Unified "Proposer-Verifier" architecture.
+    *   *Step 1*: GroundingDINO proposes candidate boxes.
+    *   *Step 2*: MobileSAM (Box Mode) refines these boxes into masks.
+    *   *Pros*: 10x faster (only segments relevant objects), improved robustness (DINO guidance).
+
+**Core Process:**
+
+1. **Segmentation**: Use Mobile-SAM (Grid or Box-Prompted) to segment RGB images into 2D object masks
 2. **Multi-view Feature Fusion**: For each detected object, extract features from 3 different views:
    - Full RGB image (provides context)
    - Cropped region with background (object + surroundings)
@@ -445,31 +457,7 @@ pipeline:
 | Graph construction & usage | `hovsg/graph/graph.py` | 170-210 |
 | Configuration | `config/create_graph.yaml` | - |
 
-### Adaptation for Our Approach
 
-We'll use this exact fusion strategy but replace CLIP with our chosen VLM (ImageBind/SigLIP2):
-
-```python
-# For each detected object:
-# 1. Extract 3 crops (full, bbox, masked_bbox)
-F_g = VLM.encode_vision(full_image)
-F_l_unmasked = VLM.encode_vision(crop_unmasked)
-F_l_masked = VLM.encode_vision(crop_masked)
-
-# 2. Stage 1 fusion
-F_l = 0.4418 * F_l_masked + 0.5582 * F_l_unmasked
-F_l = normalize(F_l)
-
-# 3. Stage 2 fusion
-similarity = cosine_sim(F_l, F_g)
-w = softmax(similarity)
-F_final = w * F_g + (1 - w) * F_l
-F_final = normalize(F_final)
-
-# 4. Store in object map with 3D points
-object.fused_features = F_final
-object.point_cloud = project_depth_to_3d(mask, depth)
-```
 
 ---
 
@@ -1402,62 +1390,7 @@ def update_value_map_with_objects(value_map, visible_objects, depth, camera_pose
 | Frontier scoring | `value_map.sort_waypoints()` | Rank by semantic values |
 | Frontier selection | `policy._get_best_frontier()` | Stickiness + acyclicity |
 
-### Implementation Checklist
 
-**Before Implementation:**
-- [ ] Understand: Only replacing projection step, everything else reuses VLFM
-- [ ] Verify: `value_map._localize_new_data()` returns (1000, 1000) confidence mask
-- [ ] Review: Complete timestep workflow in Part B above
-
-**Core Implementation:**
-- [ ] Implement `depth_to_pointcloud()` with full 4x4 transformation
-- [ ] Implement `update_value_map_with_objects()` with point cloud projection
-- [ ] Score ALL visible objects (not just new/updated!)
-- [ ] Call `value_map._localize_new_data()` once per timestep
-- [ ] Apply VLFM's temporal fusion formulas unchanged
-
-**Integration:**
-- [ ] Replace `itm_policy.py:_update_value_map()` with your custom function
-- [ ] Keep `value_map.sort_waypoints()` unchanged
-- [ ] Keep `policy._get_best_frontier()` unchanged
-- [ ] Keep frontier extraction unchanged
-
-**Testing:**
-- [ ] Objects at FOV center get higher confidence than edges
-- [ ] Different objects get different semantic scores on value map
-- [ ] Temporal fusion improves scores when revisiting from better viewpoints
-- [ ] Frontiers scored using semantic values (verify with visualizations)
-
-### Critical Implementation Notes
-
-**1. Always score ALL visible objects:**
-- Not just newly created/updated ones
-- Enables temporal fusion from better viewpoints
-- Example: Object at edge (c=0.3) → rotate to center (c=1.0) → fusion updates value map
-
-**2. Confidence is spatial, not object-specific:**
-- Determined by FOV location (center=1.0, edges=0.0)
-- Look up from `confidence_mask[grid_x, grid_y]` after projection
-- NOT based on object properties
-
-**3. Coordinate transformation pipeline:**
-- Depth pixel (u, v) → 3D camera frame → 3D world frame → 2D grid (grid_x, grid_y)
-- Use full 4x4 transformation matrix (VLFM uses shortcut because uniform score)
-
-### Files to Create/Modify
-
-**New:**
-- Object map (ConceptGraphs-style association)
-- Object scoring module (ImageBind/SigLIP wrapper)
-- `update_value_map_with_objects()` function
-
-**Modify:**
-- `itm_policy.py:_update_value_map()` → call your custom function
-
-**Reuse (unchanged):**
-- `vlfm/mapping/value_map.py`
-- `vlfm/mapping/obstacle_map.py`
-- `vlfm/policy/itm_policy.py:_get_best_frontier()`
 
 ---
 
@@ -1734,81 +1667,63 @@ This pipeline provides a robust method for converting 2D semantic segmentation m
 
 ## Appendix C: Directory Structure and Architecture
 
-### `vlfm/policy/` Directory
-**Purpose:** Contains the navigation policies (the "brains" that decide where to move)
+### 1. Directory Usage Analysis
 
-**Key files:**
-- `base_policy.py` - Abstract base class for all policies
-- `base_objectnav_policy.py` - Base class for ObjectNav policies
-  - This is where VLM clients are instantiated (GroundingDINO, SAM, YOLOv7, BLIP2)
-  - Handles object detection, mapping, and navigation orchestration
-- `itm_policy.py` - Image-Text Matching policy (uses BLIP2ITM for semantic scoring)
-- `habitat_policies.py` - Policies for Habitat simulator
-- `reality_policies.py` - Policies for real robot deployment
+| Directory | Purpose | Usage Plan | Notes |
+|-----------|---------|------------|-------|
+| **mapping/** | Value map, obstacle map | **USE AS-IS** | Core infrastructure. We use `ValueMap` to score frontiers. |
+| **policy/** | Navigation policies | **MODIFY** | We create `ObjectCentricPolicy` inheriting from `BaseObjectNavPolicy`. |
+| **vlm/** | Vision-language models | **KEEP RELEVANT** | Keep `grounding_dino.py`, `blip2.py` for initialization/stopping. |
+| **utils/** | Geometry & utilities | **USE AS-IS** | Robust geometry utilities. |
+| **reality/** | Real robot code | **IGNORE** | For future Spot deployment. |
+| **object_centric/** | [NEW] Our modules | **CREATE** | Stage 1 (Detection) and Stage 2 (Mapping) logic. |
 
-**What they do:** These integrate all the components (VLMs, mapping, navigation) and make high-level decisions about where the robot should move next based on semantic information.
+### 2. Key Components
 
-### `vlfm/reality/` Directory
-**Purpose:** Real-world robot deployment code (Boston Dynamics Spot robot)
+#### `vlfm/policy/`
+Contains the "brains". We will add `object_centric_policy.py` here.
+- **`base_objectnav_policy.py`**: We inherit from this. It handles the "Stopping Logic" (using GroundingDINO).
+- **`itm_policy.py`**: The reference implementation we are replacing. It uses BLIP2-ITM for "Scoring Logic".
 
-**Key files:**
-- `objectnav_env.py` - ObjectNav environment wrapper for real Spot robot
-- `pointnav_env.py` - PointNav environment wrapper for real robot
-- `robots/` - Robot-specific drivers and hardware interfaces
+#### `vlfm/vlm/` vs `vlfm/object_centric/`
+**Crucial Distinction**:
+- **VLFM (Original)**: Uses GroundingDINO for Stopping AND BLIP2-ITM for Scoring.
+- **Our Approach**: We **KEEP** GroundingDINO for Stopping (reusing `vlm/grounding_dino.py`) but **REPLACE** BLIP2-ITM with our own `object_centric/` modules for Scoring.
+- *Result*: Do NOT delete `vlm/`. We need it for the base class.
 
-**What they do:** Handle interfacing with real robots - camera streams, motor commands, sensor fusion, coordinate transformations from robot odometry to global frames.
+### 3. Implementation Plan
 
-### Implementation Plan for Object-Centric Policy
+**Do NOT create new directories for policies.**
+Instead, follow the existing pattern:
 
-**Do NOT create new directories.** Instead:
+1.  **Create Policy**: `vlfm/policy/object_centric_policy.py` inheriting from `BaseObjectNavPolicy`.
+2.  **Instantiate Clients**:
+    ```python
+    class ObjectCentricPolicy(BaseObjectNavPolicy):
+        def __init__(self, ...):
+            super().__init__(...)
+            # Base class loads GroundingDINO for us
+            # We load our new scorers:
+            self.sam = MobileSAMClient(...)
+            self.encoder = CLIPClient(...)
+    ```
 
-1. **Create a new policy file** in the existing `vlfm/policy/` directory:
-   - Name: `object_centric_policy.py` or `hovsig_policy.py`
-   - Inherit from `BaseObjectNavPolicy` (following the pattern from `itm_policy.py`)
-   - Replace BLIP2ITM scoring with SigLIP + HOV-SG fusion scoring
+### 4. Target Directory Structure
 
-2. **Reuse existing infrastructure:**
-   - Use existing `reality/` directory as-is (for future real robot deployment)
-   - Use existing mapping classes: `ValueMap`, `ObjectPointCloudMap`, `ObstacleMap`, `FrontierMap`
-   - Use existing `BaseObjectNavPolicy` client instantiation pattern
-
-3. **Client instantiation pattern** (from `base_objectnav_policy.py`):
-   ```python
-   self._object_detector = GroundingDINOClient(port=int(os.environ.get("GROUNDING_DINO_PORT", "12181")))
-   self._coco_object_detector = YOLOv7Client(port=int(os.environ.get("YOLOV7_PORT", "12184")))
-   self._mobile_sam = MobileSAMClient(port=int(os.environ.get("SAM_PORT", "12183")))
-   ```
-
-4. **For the new object-centric policy:**
-   ```python
-   # vlfm/policy/object_centric_policy.py
-
-   from vlfm.policy.base_objectnav_policy import BaseObjectNavPolicy
-   from vlfm.object_centric.object_detection import ObjectDetector
-   from vlfm.object_centric.sam_detector import MobileSAMClient
-   from vlfm.object_centric.siglip2 import SigLIPClient
-
-   class ObjectCentricPolicy(BaseObjectNavPolicy):
-       def __init__(self, text_prompt: str, *args, **kwargs):
-           super().__init__(*args, **kwargs)
-
-           # Instantiate clients (connect to running model servers)
-           sam_client = MobileSAMClient(port=int(os.environ.get("SAM_PORT", "12183")))
-           siglip_client = SigLIPClient(port=int(os.environ.get("SIGLIP2_PORT", "12185")))
-
-           # Create Stage 1 detector
-           self.object_detector = ObjectDetector(
-               sam_detector=sam_client,
-               siglip=siglip_client,
-               camera_intrinsics=...,  # Extracted from observations
-               min_points=50
-           )
-
-           self._text_prompt = text_prompt
-           # Stages 2-4 will be implemented in this policy class
-   ```
-
-**Key insight:** The policy class orchestrates all 4 stages, using `ObjectDetector` for Stage 1.
+```
+vlfm/
+├── policy/
+│   ├── base_objectnav_policy.py  # Parent class (Kept)
+│   └── object_centric_policy.py  # [NEW] Our logic
+├── object_centric/               # [NEW] Evaluation & Scoring
+│   ├── object_detection.py
+│   ├── object_map.py
+│   ├── clip_encoder.py
+│   └── sam_detector.py
+├── mapping/                      # Kept as-is
+├── vlm/                          # Kept for GroundingDINO/BLIP2
+└── utils/                        # Kept as-is
+```
 
 ---
 
@@ -1843,45 +1758,5 @@ This is why we transform from camera → world using the `camera_pose` matrix.
 
 ---
 
-## Appendix E: VLFM Directory Analysis
 
-### What We Use vs. Skip vs. Modify
-
-| Directory | Purpose | Usage Plan | Notes |
-|-----------|---------|------------|-------|
-| **mapping/** | Value map, obstacle map, frontier detection | **USE AS-IS** | Core infrastructure. We use `ValueMap` to score frontiers and `ObstacleMap` to extract frontiers. |
-| **policy/** | Navigation policies | **MODIFY** | We will create a new `ObjectCentricPolicy` here that inherits from `BaseObjectNavPolicy`. |
-| **vlm/** | Vision-language models | **KEEP RELEVANT** | We retain `grounding_dino.py`, `yolo_world.py`, and `blip2.py` as they are used by the base infrastructure for initialization and termination conditions. We REPLACE the scoring mechanism (BLIP2-ITM) with our new object-centric scoring. |
-| **utils/** | Geometry & utilities | **USE AS-IS** | Robust geometry utilities. |
-| **obs_transformers/** | Preprocessing | **USE AS-IS** | Handles RGB-D resizing/normalization. |
-
-### How GroundingDINO is Used (We Keep This)
-
-In the original VLFM and our implementation, GroundingDINO is used by `BaseObjectNavPolicy` to:
-1.  **Initialize the detector**: `_get_object_detections()` uses GroundingDINO to check if the target object is visible (for stopping logic).
-2.  **Termination Condition**: The policy stops when the target object is confidently detected and the robot is close enough.
-
-**Crucial Distinction**:
-*   **VLFM**: Uses GroundingDINO for target detection (stopping) AND BLIP2-ITM for frontier scoring (exploration).
-*   **Our Approach**: We **KEEP** GroundingDINO for target detection (stopping) but **REPLACE** BLIP2-ITM with our Object-Centric Scoring (SigLIP/ImageBind) for frontier scoring (exploration).
-
-Therefore, we do NOT empty the `vlm/` folder. We keep the files required by `BaseObjectNavPolicy` but implement our own scoring module in `vlfm/object_centric/`.
-
-### Directory Structure Plan
-
-```
-vlfm/
-├── policy/
-│   ├── base_objectnav_policy.py  # Keep (we inherit from this)
-│   ├── itm_policy.py             # Reference (we replace this)
-│   └── object_centric_policy.py  # [NEW] Our policy
-├── object_centric/               # [NEW] Our modules
-│   ├── object_detection.py       # Stage 1: Detection pipeline
-│   ├── object_map.py             # Stage 2: Association & Mapping
-│   ├── siglip2.py                # VLM Client
-│   └── sam_detector.py           # SAM Client
-├── mapping/                      # Use as-is
-├── vlm/                          # Keep GroundingDINO/YOLO/BLIP2
-└── utils/                        # Use as-is
-```
 
