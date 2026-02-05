@@ -19,7 +19,7 @@ from vlfm.vlm.blip2 import BLIP2Client
 from vlfm.vlm.coco_classes import COCO_CLASSES
 from vlfm.vlm.grounding_dino import GroundingDINOClient, ObjectDetections
 # from vlfm.vlm.sam import MobileSAMClient
-from vlfm.object_centric.sam_detector import MobileSAMClient
+from vlfm.object_centric.sam_segmenter import MobileSAMClient
 from vlfm.vlm.yolov7 import YOLOv7Client
 
 try:
@@ -76,6 +76,8 @@ class BaseObjectNavPolicy(BasePolicy):
         self._vqa_prompt = vqa_prompt
         self._coco_threshold = coco_threshold
         self._non_coco_threshold = non_coco_threshold
+        # to keep track of the objects detected in the current frame
+        self._current_detections = None
 
         self._num_steps = 0
         self._did_reset = False
@@ -125,6 +127,11 @@ class BaseObjectNavPolicy(BasePolicy):
             self._update_object_map(rgb, depth, tf, min_depth, max_depth, fx, fy)
             for (rgb, depth, tf, min_depth, max_depth, fx, fy) in object_map_rgbd
         ]
+
+        # keep track of the last set of detected objects, we will need it in object_centric_policy
+        # we are working with only one camera, so we just extract the first entry of detections
+        self._current_detections = detections[0]
+
         robot_xy = self._observations_cache["robot_xy"]
         goal = self._get_target_object_location(robot_xy)
 

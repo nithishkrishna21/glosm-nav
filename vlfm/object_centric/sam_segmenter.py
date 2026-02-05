@@ -19,7 +19,7 @@ except ModuleNotFoundError:
     print("Could not import mobile_sam. This is OK if you are only using the client.")
 
 
-class SAMDetector:
+class SAMSegmenter:
     def __init__(
         self,
         sam_checkpoint: str,
@@ -61,8 +61,9 @@ class SAMDetector:
         with torch.inference_mode():
             self.predictor.set_image(image)
             # MobileSAM predictor expects box as np.array([x1, y1, x2, y2])
-            masks, _, _ = self.predictor.predict(box=np.array(bbox), multimask_output=False)
-        return masks[0]
+            # masks, _, _ = self.predictor.predict(box=np.array(bbox), multimask_output=False)
+            masks, scores, _ = self.predictor.predict(box=np.array(bbox), multimask_output=False)
+        return masks[0], scores[0]
 
     def segment_image(self, image: np.ndarray) -> List[Dict]:
         """Segments the objects in the given image.
@@ -100,8 +101,9 @@ class MobileSAMClient:
         """Legacy method called by BaseObjectNavPolicy."""
         response = send_request(self.url, image=image, bbox=bbox)
         cropped_mask_str = response["cropped_mask"]
+        score = response["score"]
         cropped_mask = str_to_bool_arr(cropped_mask_str, shape=tuple(image.shape[:2]))
-        return cropped_mask
+        return cropped_mask, score
 
 
 if __name__ == "__main__":
@@ -113,16 +115,17 @@ if __name__ == "__main__":
 
     print("Loading model...")
 
-    class MobileSAMServer(ServerMixin, SAMDetector):
+    class MobileSAMServer(ServerMixin, SAMSegmenter):
         def process_payload(self, payload: dict) -> dict:
             image = str_to_image(payload["image"])
             
             # Dispatch based on payload content
             if "bbox" in payload:
                 # Handle Legacy Request (from BaseObjectNavPolicy)
-                cropped_mask = self.segment_bbox(image, payload["bbox"])
+                cropped_mask, score = self.segment_bbox(image, payload["bbox"])
                 cropped_mask_str = bool_arr_to_str(cropped_mask)
-                return {"cropped_mask": cropped_mask_str}
+                score = float(score)
+                return {"cropped_mask": cropped_mask_str, "score": score}
             else:
                 # Handle New Request (from ObjectSegmenter)
                 masks = self.segment_image(image)

@@ -30,9 +30,9 @@ from vlfm.mapping.value_map import ValueMap
 from vlfm.policy.utils.acyclic_enforcer import AcyclicEnforcer
 
 # Our object-centric modules (Stage 1 & 2)
-from vlfm.object_centric.object_detection import ObjectSegmenter
-from vlfm.object_centric.object_map import SemanticMap, SemanticMapObject
-from vlfm.object_centric.sam_detector import MobileSAMClient
+from vlfm.object_centric.object_segmentation import ObjectSegmenter
+from vlfm.object_centric.semantic_map import SemanticMap, SemanticMapObject
+from vlfm.object_centric.sam_segmenter import MobileSAMClient
 from vlfm.object_centric.siglip2 import SigLIPClient
 from vlfm.object_centric.clip_encoder import CLIPClient
 from habitat_baselines.common.baseline_registry import baseline_registry
@@ -67,7 +67,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             self.encoder = encoder
         
         self.object_segmenter = ObjectSegmenter(
-            sam_detector=self.mobile_sam_client,
+            sam_segmenter=self.mobile_sam_client,
             encoder=self.encoder,
             camera_intrinsics=camera_intrinsics,
             min_points=16,  # Match ConceptGraphs min_points_threshold
@@ -144,12 +144,13 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # Step 1: Get observations
         rgb, depth, camera_pose, min_depth, max_depth, fov = self._observations_cache["value_map_rgbd"][0]
 
-        # Step 2: Detect objects in current frame
-        detections = self.object_segmenter.detect_objects(rgb, depth, camera_pose)
-        print(f"DEBUG: Detected {len(detections)} objects this frame")
+        # Step 2: Segment objects in current frame
+        segmentations = self.object_segmenter.segment_objects(rgb, depth, 
+                                                        camera_pose, self._current_detections)
+        print(f"DEBUG: Segmented {len(segmentations)} objects in this frame")
 
         # Step 3: Update object map
-        self.semantic_map.update(detections)
+        self.semantic_map.update(segmentations)
 
         # Step 4: Get visible objects and compute scores
         visible_objects = self.semantic_map.get_visible_objects()

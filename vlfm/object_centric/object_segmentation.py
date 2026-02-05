@@ -7,7 +7,7 @@ Handles: SAM segmentation → HOV-SG 3-crop fusion → Depth to point cloud
 This file will be used by: object_policy.py (the main orchestrator)
 This file depends on:
     - MobileSAM (for segmentation)
-    - SigLIP (for feature extraction)
+    - SigLIP/OpenCLIP (for feature extraction)
     - ConceptGraphs utils (for depth → point cloud conversion)
 """
 
@@ -18,12 +18,12 @@ from typing import List, Dict, Tuple, Optional
 import open3d as o3d
 
 # Custom Wrappers (Client classes for HTTP communication with model servers)
-from .sam_detector import MobileSAMClient
+from .sam_segmenter import MobileSAMClient
 from .siglip2 import SigLIPClient
 from .clip_encoder import CLIPClient
 
 
-class Detection:
+class Segmentation:
     """
     Represents a single detected object from one frame.
 
@@ -32,7 +32,7 @@ class Detection:
         bbox: (x1, y1, x2, y2) bounding box
         features: (D,) fused feature vector (after HOV-SG 3-crop fusion)
         point_cloud: (N, 3) 3D points in WORLD frame
-        confidence: Detection confidence from SAM
+        confidence: Segmentation confidence from SAM
     """
     def __init__(
         self,
@@ -54,7 +54,8 @@ class ObjectSegmenter:
     Handles object detection pipeline for a single frame.
 
     Pipeline:
-        1. Segment image with SAM → get masks
+        1. Segment image with SAM → get masks 
+            (Using bboxes from Grounding DINO or using Automatic Mask Generation)
         2. For each mask:
             a. Extract 3 crops (global, masked bbox, cropped masked)
             b. Extract features for each crop with SigLIP
@@ -65,26 +66,24 @@ class ObjectSegmenter:
 
     def __init__(
         self,
-        sam_detector: MobileSAMClient,  # MobileSAMClient instance (HTTP client)
-        # siglip: SigLIPClient,           # SigLIPClient instance (HTTP client)
+        sam_segmenter: MobileSAMClient,  # MobileSAMClient instance (HTTP client)
         encoder: None,                   # Encoder model client instance (HTTP Client)
         camera_intrinsics: np.ndarray,  # 3×3 intrinsics matrix K
         min_points: int = 50,           # Minimum 3D points for valid object
         bbox_margin: int = 50,         # Margin to increase bounding box by
-        masked_weight: float = 0.75    # Weight for masked background in fusion
+        # masked_weight: float = 0.75    # Weight for masked background in fusion
+        masked_weight: float = 0.4418
     ):
         """
         Initialize the object detector.
 
         Args:
-            sam_detector: MobileSAMClient instance for mask generation (connects to SAM server)
-            siglip: SigLIPClient instance for feature extraction (connects to SigLIP server)
+            sam_segmenter: MobileSAMClient instance for mask generation (connects to SAM server)
             encoder: Encoder instance for feature extraction (connects to the corresponding encoder server)
             camera_intrinsics: 3×3 camera intrinsics matrix K
             min_points: Filter out objects with fewer 3D points
         """
-        self.sam_detector = sam_detector
-        # self.siglip = siglip
+        self.sam_segmenter = sam_segmenter
         if encoder is None:
             self.encoder = CLIPClient
         else:
@@ -96,14 +95,15 @@ class ObjectSegmenter:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-    def detect_objects(
+    def segment_objects(
         self,
         rgb: np.ndarray,           # (H, W, 3) RGB image
         depth: np.ndarray,         # (H, W) depth image
-        camera_pose: np.ndarray    # (4, 4) camera-to-world transform
-    ) -> List[Detection]:
+        camera_pose: np.ndarray,   # (4, 4) camera-to-world transform
+        detections: List[Dict]     # Objects detected by GroundingDINO
+    ) -> List[Segmentaton]:
         """
-        Detect objects in a single frame and extract their features + point clouds.
+        Segment objects in a single frame and extract their features + point clouds.
 
         Args:
             rgb: RGB image (H, W, 3)
@@ -117,7 +117,16 @@ class ObjectSegmenter:
         # STEP 1: Segment image with SAM
         # ══════════════════════════════════════════════════════════════
 
-        masks = self._segment_with_sam(rgb)
+        # masks = self._segment_with_sam(rgb)
+
+        # If Grounding DINO could not detect any objects in the current frame, 
+        # run Automatic Mask Generation
+        if len(detections) == 0:
+            masks = self._segment_with_sam(rgb)
+        
+        else:
+            masks = self._segment_image_with_bboxes(rgb, detections)
+
         print(f"DEBUG SAM: Raw masks from SAM: {len(masks)}")
 
         # # Discard low-confidence masks 
@@ -201,105 +210,27 @@ class ObjectSegmenter:
         fused_feats = self._fuse_features(global_features, cropped_feats, cropped_masked_feats)
 
         # ══════════════════════════════════════════════════════════════
-        # STEP 6: Create detections
+        # STEP 6: Create segmentation objects
         # ══════════════════════════════════════════════════════════════ 
-        detections = []
+        segmentations = []
         for i, mask_data in enumerate(valid_masks):
-            detection = Detection(
+            segmentation = Segmentation(
                 mask=mask_data['segmentation'],
                 bbox=mask_data['bbox'],
                 features=fused_feats[i],
                 point_cloud=point_clouds[i],
-                confidence=mask_data['predicted_iou']
+                # confidence=mask_data['predicted_iou']
+                confidence=mask_data['stability_score']
             )
-            detections.append(detection)
+            segmentations.append(segmentation)
 
-        return detections        
-
-        # # ══════════════════════════════════════════════════════════════
-        # # STEP 3: Process each detected mask
-        # # ══════════════════════════════════════════════════════════════
-        # detections = []
-
-        # for mask_data in masks:
-        #     mask = mask_data['segmentation']  # (H, W) binary
-        #     bbox = mask_data['bbox']          # (x, y, w, h)
-        #     confidence = mask_data['predicted_iou'] # float score
-
-        #     # ──────────────────────────────────────────────────────────
-        #     # STEP 3a: Extract 3 crops for HOV-SG fusion
-        #     # ──────────────────────────────────────────────────────────
-
-        #     crop_bbox = self._create_bbox_crop(rgb, bbox, bbox_margin=self.bbox_margin)
-        #     crop_masked_bbox = self._create_masked_crop(rgb, mask, bbox)
-            
-        #     # Skip if either crop is empty
-        #     if crop_bbox.size == 0 or crop_masked_bbox.size == 0:
-        #         continue
-                
-        #     crop_bbox = cv2.resize(crop_bbox, (512, 512))
-        #     crop_masked_bbox = cv2.resize(crop_masked_bbox, (512, 512))
-
-
-
-        #     # ──────────────────────────────────────────────────────────
-        #     # STEP 3b: Extract features for local crops using SigLIP
-        #     # ──────────────────────────────────────────────────────────
-
-        #     cropped_feats = self._extract_features(crop_bbox)
-        #     cropped_masked_feats = self._extract_features(crop_masked_bbox)
-
-
-        #     # ──────────────────────────────────────────────────────────
-        #     # STEP 3c: HOV-SG weighted fusion
-        #     # ──────────────────────────────────────────────────────────
-
-        #     fused_features = self._fuse_features(
-        #         global_features,
-        #         cropped_feats,
-        #         cropped_masked_feats
-        #     )
-
-
-        #     # ──────────────────────────────────────────────────────────
-        #     # STEP 3d: Project mask to 3D point cloud
-        #     # ──────────────────────────────────────────────────────────
-
-        #     point_cloud_camera = self._depth_to_pointcloud(
-        #         depth, mask, self.camera_intrinsics
-        #     )
-
-        #     # Transform to world frame
-        #     point_cloud_world = self._transform_to_world(
-        #         point_cloud_camera, camera_pose
-        #     )
-
-        #     # Filter: minimum points threshold
-        #     num_points = len(point_cloud_world.points)
-        #     if num_points < self.min_points:
-        #         # print(f"DEBUG: Rejecting mask (only {num_points} points, need {self.min_points})")
-        #         continue
-        #     # print(f"DEBUG: Accepting mask with {num_points} points")
-
-
-        #     # ──────────────────────────────────────────────────────────
-        #     # STEP 3e: Create Detection object
-        #     # ──────────────────────────────────────────────────────────
-        #     detection = Detection(
-        #         mask=mask,
-        #         bbox=bbox,
-        #         features=fused_features,
-        #         point_cloud=point_cloud_world,
-        #         confidence=confidence
-        #     )
-        #     detections.append(detection)
-
-        # return detections
+        return segmentations        
 
     # ══════════════════════════════════════════════════════════════════
     # Helper Methods
     # ══════════════════════════════════════════════════════════════════
 
+    # MobileSAM - Automatic Mask Generation
     def _segment_with_sam(self, rgb: np.ndarray) -> List[Dict]:
         """
         Run SAM segmentation on RGB image.
@@ -311,7 +242,31 @@ class ObjectSegmenter:
                  - 'predicted_iou': float IoU score
         """
 
-        masks = self.sam_detector.segment_image(rgb)
+        masks = self.sam_segmenter.segment_image(rgb)
+        return masks
+
+    # MobileSAM - Predict
+    def _segment_image_with_bboxes(self, rgb: np.ndarray, detections: List[Dict]) -> List[Dict]:
+        """
+        Run SAM segmentation on RGB image with the help of bboxes
+
+        Returns: List of dicts with keys: 'segmentation', 'bbox', 'stability_score', 'predicted_iou
+                 - 'segmentation': (H, W) binary mask
+                 - 'bbox': (x, y, w, h) bounding box
+                 - 'stability_score': float confidence score
+        """
+        masks = []
+        height, width = rgb.shape[:2]
+        for bbox in detections.boxes:
+            bbox_denorm = bbox * np.array([width, height, width, height])
+            raw_mask, score = self.sam_segmenter.segment_bbox(rgb, bbox_denorm)
+            mask = {
+                'segmentation': raw_mask,
+                'bbox': bbox_denorm,
+                'stability_score': score
+            }
+            masks.append(mask)
+
         return masks
 
 

@@ -6,14 +6,14 @@ Maintains a persistent map of objects across frames by matching new detections
 to existing objects using geometric similarity (IoU or nnratio) and semantic similarity (cosine).
 
 This file will be used by: object_policy.py (the main orchestrator)
-This file depends on: object_detection.py (Detection class)
+This file depends on: object_segmentation.py (Segmentation class)
 """
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from typing import List
-from .object_detection import Detection
+from .object_segmentation import Segmentation
 import open3d as o3d
 
 
@@ -25,7 +25,7 @@ class SemanticMapObject:
         point_cloud: Accumulated 3D points in world frame
         features: Averaged feature vector
         bbox_3d: 3D bounding box [min_xyz, max_xyz]
-        num_detections: Number of times observed
+        num_occurences: Number of times observed
         confidence: Average confidence score
         is_visible: Whether object was seen in current frame
     """
@@ -41,7 +41,7 @@ class SemanticMapObject:
         self.point_cloud = point_cloud
         self.features = features
         self.confidence = confidence
-        self.num_detections = 1
+        self.num_occurences = 1
         self.is_visible = False
 
         # Compute 3D bounding box
@@ -74,13 +74,13 @@ class SemanticMapObject:
 
         return pcd
 
-    def update(self, detection: Detection):
+    def update(self, segmentation: Segmentation):
         """
-        Merge a new detection into this object.
+        Merge a new segmentation into this object.
         """
 
         # append the new point cloud to the existing point cloud
-        merged_point_cloud = self.point_cloud + detection.point_cloud
+        merged_point_cloud = self.point_cloud + segmentation.point_cloud
 
         # downsample to remove redundant points
         self.point_cloud = self._downsample_voxel(merged_point_cloud)
@@ -91,15 +91,15 @@ class SemanticMapObject:
         # else: keep the old bbox
 
         # update the semantic features
-        self.features = (self.num_detections * self.features + detection.features) / (self.num_detections + 1)
+        self.features = (self.num_occurences * self.features + segmentation.features) / (self.num_occurences + 1)
         # normalize the features
         self.features = F.normalize(self.features, dim=-1).float().to(self.device)
 
         # update the confidence
-        self.confidence = (self.num_detections * self.confidence + detection.confidence) / (self.num_detections + 1)
+        self.confidence = (self.num_occurences * self.confidence + segmentation.confidence) / (self.num_occurences + 1)
 
-        # update the number of detections
-        self.num_detections += 1
+        # update the number of occurences
+        self.num_occurences += 1
 
         # Make the object visible
         self.is_visible = True
@@ -134,23 +134,23 @@ class SemanticMap:
         self.objects = []
         self.next_object_id = 0
 
-    def update(self, detections: List[Detection]):
+    def update(self, segmentations: List[Segmentation]):
         """
-        Main update function: match detections to existing objects or create new ones.
+        Main update function: match segmentations to existing objects or create new ones.
         """
         
         # Mark all objects as not visible
         for obj in self.objects:
             obj.is_visible = False
 
-        # if there are no detection, then return
-        if(len(detections) == 0):
+        # if there are no segmentations, then return
+        if(len(segmentations) == 0):
             return
 
-        # else if there are no objects in the map, then just create a mapobject for each detection
+        # else if there are no objects in the map, then just create a mapobject for each segmentation
         elif(len(self.objects) == 0):
-            for det in detections:
-                new_obj = self._create_new_object(det)
+            for seg in segmentations:
+                new_obj = self._create_new_object(seg)
                 new_obj.is_visible = True
                 self.objects.append(new_obj)
                 self.next_object_id += 1
@@ -159,20 +159,20 @@ class SemanticMap:
         else:
         
             # Compute the MxN geometric similarity matrix
-            geometric_sim = self._compute_geometric_similarities(detections)
+            geometric_sim = self._compute_geometric_similarities(segmentations)
 
             # Compute the MxN semantic similarity matrix
-            semantic_sim = self._compute_semantic_similarities(detections)
+            semantic_sim = self._compute_semantic_similarities(segmentations)
 
             # Aggregate the similarities
             total_sim = self._aggregate_similarities(geometric_sim, semantic_sim)
 
             # Perform greedy assignment
-            self._greedy_assignment(detections, total_sim)
+            self._greedy_assignment(segmentations, total_sim)
 
     def _compute_geometric_similarities(
         self,
-        detections: List[Detection]
+        segmentations: List[Segmentation]
     ) -> np.ndarray:
         """
         Compute (M×N) geometric similarity matrix.
@@ -180,33 +180,33 @@ class SemanticMap:
         Dispatches to either IoU or nnratio based on self.geometric_sim_type.
 
         Args:
-            detections: List of M detections
+            segmentations: List of M segmentations
 
         Returns: (M, N) numpy array of geometric similarities
         """
         # print(f"[DEBUG] Geometric Sim Type: {self.geometric_sim_type}")
         if self.geometric_sim_type == "iou":
-            return self._compute_iou_similarities(detections)
+            return self._compute_iou_similarities(segmentations)
         elif self.geometric_sim_type == "overlap":
-            return self._compute_nnratio_similarities(detections)
+            return self._compute_nnratio_similarities(segmentations)
         else:
             raise ValueError(f"Unknown geometric_sim_type: {self.geometric_sim_type}")
 
     def _compute_iou_similarities(
         self,
-        detections: List[Detection]
+        segmentations: List[Segmentation]
     ) -> torch.Tensor:
         """
         Compute (M×N) geometric similarity matrix using 3D bbox IoU.
 
         Args:
-            detections: List of M detections
+            segmentations: List of M segmentations
 
         Returns: (M, N) torch tensor of IoU scores [0, 1]
         """
 
-        # Compute bboxes for detections
-        dec_bbox = [compute_3d_bbox_from_points(d.point_cloud) for d in detections]
+        # Compute bboxes for segmentations
+        dec_bbox = [compute_3d_bbox_from_points(d.point_cloud) for d in segmentations]
         dec_bbox = torch.stack(dec_bbox, dim=0).to(self.device)  # (M, 8, 3)
 
         obj_bbox = torch.stack([obj.bbox_3d for obj in self.objects], dim=0).to(self.device)  # (N, 8, 3)
@@ -220,20 +220,20 @@ class SemanticMap:
 
     def _compute_nnratio_similarities(
         self,
-        detections: List[Detection]
+        segmentations: List[Segmentation]
     ) -> torch.Tensor:
         """
         Compute (M×N) geometric similarity matrix using nnratio (nearest neighbor ratio).
 
-        nnratio[i,j] = proportion of points in detection[i] that have nearest neighbors
+        nnratio[i,j] = proportion of points in segmentation[i] that have nearest neighbors
                        in object[j] within distance threshold
 
         Args:
-            detections: List of M detections
+            segmentations: List of M segmentations
 
         Returns: (M, N) torch tensor of nnratio scores [0, 1]
         """
-        M = len(detections)
+        M = len(segmentations)
         N = len(self.objects)
         overlap_matrix = np.zeros((M, N))
 
@@ -243,8 +243,8 @@ class SemanticMap:
             kdtree = o3d.geometry.KDTreeFlann(obj.point_cloud)
             kdtrees.append(kdtree)
 
-        # Get detection point clouds as numpy arrays
-        det_points_list = [np.asarray(det.point_cloud.points) for det in detections]
+        # Get segmentation point clouds as numpy arrays
+        det_points_list = [np.asarray(det.point_cloud.points) for det in segmentations]
 
         # Compute pairwise overlaps
         for i in range(M):
@@ -259,7 +259,7 @@ class SemanticMap:
                 # This saves computation for objects that are far apart
                 iou = compute_3d_iou_batch(
                     self.objects[j].bbox_3d.unsqueeze(0),  # (1, 8, 3)
-                    compute_3d_bbox_from_points(detections[i].point_cloud).unsqueeze(0)  # (1, 8, 3)
+                    compute_3d_bbox_from_points(segmentations[i].point_cloud).unsqueeze(0)  # (1, 8, 3)
                 )
                 if iou.item() < 1e-6:
                     continue
@@ -281,21 +281,21 @@ class SemanticMap:
 
     def _compute_semantic_similarities(
         self,
-        detections: List[Detection]
+        segmentations: List[Segmentation]
     ) -> torch.Tensor:
         """
         Compute (M×N) semantic similarity matrix using cosine similarity.
 
-        M = Number of detections
+        M = Number of segmentations
         N = Number of map objects
 
         Args:
-            detections: List of M detections
+            segmentations: List of M segmentations
 
         Returns: (M, N) torch tensor of cosine similarities [-1, 1]
         """
-        # Stack detection features into (M, D) tensor
-        det_features = torch.stack([d.features.squeeze() for d in detections], dim=0).to(self.device)  # (M, D)
+        # Stack segmentation features into (M, D) tensor
+        det_features = torch.stack([d.features.squeeze() for d in segmentations], dim=0).to(self.device)  # (M, D)
         # print(f"DEBUG SHAPE: det_features after stack: {det_features.shape}")
 
         # Stack object features into (N, D) tensor
@@ -335,18 +335,18 @@ class SemanticMap:
 
     def _greedy_assignment(
         self,
-        detections: List[Detection],
+        segmentations: List[Segmentation],
         similarity_matrix: torch.Tensor
     ):
         """
-        Perform greedy assignment of detections to objects.
+        Perform greedy assignment of segmentations to objects.
 
         Args:
-            detections: List of M detections
+            segmentations: List of M segmentations
             similarity_matrix: (M, N) combined similarity scores
         """
-        # for each detection
-        for i, det in enumerate(detections):
+        # for each segmentation
+        for i, det in enumerate(segmentations):
             
             max_sim, best_obj_idx = torch.max(similarity_matrix[i], dim=0)
 
@@ -362,16 +362,16 @@ class SemanticMap:
                 self.objects[best_obj_idx.item()].update(det)
                 self.objects[best_obj_idx.item()].is_visible = True
 
-    def _create_new_object(self, detection: Detection) -> SemanticMapObject:
+    def _create_new_object(self, segmentation: Segmentation) -> SemanticMapObject:
         """
-        Create a new SemanticMapObject from a detection.
+        Create a new SemanticMapObject from a segmentation.
 
         Returns: New SemanticMapObject with unique ID
         """
         obj = SemanticMapObject(
-            point_cloud = detection.point_cloud,
-            features = detection.features,
-            confidence = detection.confidence,
+            point_cloud = segmentation.point_cloud,
+            features = segmentation.features,
+            confidence = segmentation.confidence,
             object_id = self.next_object_id
         )
 
