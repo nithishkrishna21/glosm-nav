@@ -22,6 +22,8 @@ from .sam_segmenter import MobileSAMClient
 from .siglip2 import SigLIPClient
 from .clip_encoder import CLIPClient
 
+DEBUG = True
+
 
 class Segmentation:
     """
@@ -101,7 +103,7 @@ class ObjectSegmenter:
         depth: np.ndarray,         # (H, W) depth image
         camera_pose: np.ndarray,   # (4, 4) camera-to-world transform
         detections: List[Dict]     # Objects detected by GroundingDINO
-    ) -> List[Segmentaton]:
+    ) -> List[Segmentation]:
         """
         Segment objects in a single frame and extract their features + point clouds.
 
@@ -121,13 +123,18 @@ class ObjectSegmenter:
 
         # If Grounding DINO could not detect any objects in the current frame, 
         # run Automatic Mask Generation
-        if len(detections) == 0:
+        if detections is None or detections.num_detections == 0:
+            if DEBUG:
+                print("Running Automatic Mask Generation")
             masks = self._segment_with_sam(rgb)
         
         else:
+            if DEBUG:
+                print("Running SAM with BBoxes")
             masks = self._segment_image_with_bboxes(rgb, detections)
 
-        print(f"DEBUG SAM: Raw masks from SAM: {len(masks)}")
+        if DEBUG:
+            print(f"DEBUG: Raw masks from SAM: {len(masks)}")
 
         # # Discard low-confidence masks 
         # masks = [m for m in masks if m['predicted_iou'] > 0.70
@@ -259,7 +266,7 @@ class ObjectSegmenter:
         height, width = rgb.shape[:2]
         for bbox in detections.boxes:
             bbox_denorm = bbox * np.array([width, height, width, height])
-            raw_mask, score = self.sam_segmenter.segment_bbox(rgb, bbox_denorm)
+            raw_mask, score = self.sam_segmenter.segment_bbox(rgb, bbox_denorm.tolist())
             mask = {
                 'segmentation': raw_mask,
                 'bbox': bbox_denorm,

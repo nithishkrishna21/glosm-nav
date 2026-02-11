@@ -9,13 +9,13 @@ This module contains our capstone implementation for improving VLFM with:
 - Persistent 3D object mapping (ConceptGraphs-inspired)
 """
 
-from .sam_detector import SAMDetector
+from .sam_segmenter import SAMSegmenter
 from .siglip2 import SigLIP
-from .object_detection import ObjectSegmenter, Detection
+from .object_segmentation import ObjectSegmenter, Segmentation
 
 __all__ = [
-    "SAMDetector",
+    "SAMSegmenter",
     "SigLIP",
     "ObjectSegmenter",
-    "Detection",
+    "Segmentation",
 ]

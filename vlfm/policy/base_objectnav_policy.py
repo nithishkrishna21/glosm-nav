@@ -114,6 +114,8 @@ class BaseObjectNavPolicy(BasePolicy):
         masks: Tensor,
         deterministic: bool = False,
     ) -> Any:
+        print(f"\n==================================================")
+        print(f"START STEP: {self._num_steps}")
         """
         Starts the episode by 'initializing' and allowing robot to get its bearings
         (e.g., spinning in place to get a good view of the scene).
@@ -131,6 +133,7 @@ class BaseObjectNavPolicy(BasePolicy):
         # keep track of the last set of detected objects, we will need it in object_centric_policy
         # we are working with only one camera, so we just extract the first entry of detections
         self._current_detections = detections[0]
+        print(f"DEBUG: Detector found {self._current_detections.num_detections} objects")
 
         robot_xy = self._observations_cache["robot_xy"]
         goal = self._get_target_object_location(robot_xy)
@@ -148,7 +151,8 @@ class BaseObjectNavPolicy(BasePolicy):
         action_numpy = pointnav_action.detach().cpu().numpy()[0]
         if len(action_numpy) == 1:
             action_numpy = action_numpy[0]
-        print(f"Step: {self._num_steps} | Mode: {mode} | Action: {action_numpy}\n")
+        print(f"Step: {self._num_steps} | Mode: {mode} | Action: {action_numpy}")
+        print(f"==================================================")
         self._policy_info.update(self._get_policy_info(detections[0]))
         self._num_steps += 1
 
@@ -236,14 +240,17 @@ class BaseObjectNavPolicy(BasePolicy):
             if has_coco
             else self._object_detector.predict(img, caption=self._non_coco_caption)
         )
-        detections.filter_by_class(target_classes)
-        det_conf_threshold = self._coco_threshold if has_coco else self._non_coco_threshold
-        detections.filter_by_conf(det_conf_threshold)
-
+        # Return all the object detections for object-centric policy
+        # detections.filter_by_class(target_classes)
+        # det_conf_threshold = self._coco_threshold if has_coco else self._non_coco_threshold
+        # detections.filter_by_conf(det_conf_threshold)
+        detections.filter_by_conf(0.25)
+    
         if has_coco and has_non_coco and detections.num_detections == 0:
             # Retry with non-coco object detector
             detections = self._object_detector.predict(img, caption=self._non_coco_caption)
-            detections.filter_by_class(target_classes)
+            # Return all the object detections for object-centric policy
+            # detections.filter_by_class(target_classes)
             detections.filter_by_conf(self._non_coco_threshold)
 
         return detections
@@ -324,13 +331,20 @@ class BaseObjectNavPolicy(BasePolicy):
             obs = list(self._observations_cache["object_map_rgbd"][0])
             obs[1] = depth
             self._observations_cache["object_map_rgbd"][0] = tuple(obs)
-        for idx in range(len(detections.logits)):
-            bbox_denorm = detections.boxes[idx] * np.array([width, height, width, height])
-            object_mask = self._mobile_sam.segment_bbox(rgb, bbox_denorm.tolist())
 
+        for idx in range(len(detections.logits)):
+        
+            # skip detections that are not the target object
+            # this whole loop is to update the object map (Map 1)
+            if(detections.phrases[idx] != self._target_object):
+                continue
+        
+            bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
+            object_mask, _ = self._mobile_sam.segment_bbox(rgb, bbox_denorm.tolist())
+        
             # If we are using vqa, then use the BLIP2 model to visually confirm whether
             # the contours are actually correct.
-
+        
             if self._use_vqa:
                 contours, _ = cv2.findContours(object_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
                 annotated_rgb = cv2.drawContours(rgb.copy(), contours, -1, (255, 0, 0), 2)
@@ -341,7 +355,7 @@ class BaseObjectNavPolicy(BasePolicy):
                 answer = self._vqa.ask(annotated_rgb, question)
                 if not answer.lower().startswith("yes"):
                     continue
-
+        
             self._object_masks[object_mask > 0] = 1
             self._object_map.update_map(
                 self._target_object,

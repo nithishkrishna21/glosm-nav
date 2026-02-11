@@ -9,7 +9,7 @@ Key difference from ITMPolicy:
     - ObjectCentricPolicy: Scores INDIVIDUAL objects → different scores per object location
 
 Pipeline per timestep:
-    1. Detect objects (SAM + SigLIP fusion) → List[Detection]
+    1. Detect objects (SAM + CLIP fusion) → List[Segmentation]
     2. Update object map (association) → persistent SemanticMapObjects
     3. Score visible objects against target text
     4. Project object scores onto value map
@@ -33,7 +33,6 @@ from vlfm.policy.utils.acyclic_enforcer import AcyclicEnforcer
 from vlfm.object_centric.object_segmentation import ObjectSegmenter
 from vlfm.object_centric.semantic_map import SemanticMap, SemanticMapObject
 from vlfm.object_centric.sam_segmenter import MobileSAMClient
-from vlfm.object_centric.siglip2 import SigLIPClient
 from vlfm.object_centric.clip_encoder import CLIPClient
 from habitat_baselines.common.baseline_registry import baseline_registry
 
@@ -238,4 +237,4 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             # if scores.max() > 0.1:
             #     print(f"[DEBUG] FOUND CANDIDATE! Score: {scores.max():.4f}")
 
-        return np.float32(scores.squeeze(-1).cpu())
+        return np.atleast_1d(scores.squeeze(-1).float().cpu().numpy())

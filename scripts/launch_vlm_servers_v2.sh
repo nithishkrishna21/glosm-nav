@@ -33,7 +33,7 @@ tmux send-keys -t ${session_name}:0.0 "conda activate vlfm_v2 && cd /workspace/v
 # tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.blip2itm --port ${BLIP2ITM_PORT}" C-m  # Commented out
 # tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.siglip2 --port ${SIGLIP2_PORT}" C-m
 tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.clip_encoder --port ${CLIP_PORT}" C-m
-tmux send-keys -t ${session_name}:0.2 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.sam_detector --port ${SAM_PORT}" C-m
+tmux send-keys -t ${session_name}:0.2 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.sam_segmenter --port ${SAM_PORT}" C-m
 tmux send-keys -t ${session_name}:0.3 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.yolov7 --port ${YOLOV7_PORT}" C-m
 
 # Attach to the tmux session to view the windows

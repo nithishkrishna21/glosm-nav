@@ -1,5 +1,5 @@
 import os
-from typing import Any, List, Optional, Dict
+from typing import Any, List, Optional, Dict, Tuple
 
 import numpy as np
 import torch
@@ -104,7 +104,6 @@ class MobileSAMClient:
         score = response["score"]
         cropped_mask = str_to_bool_arr(cropped_mask_str, shape=tuple(image.shape[:2]))
         return cropped_mask, score
-
 
 if __name__ == "__main__":
     import argparse
