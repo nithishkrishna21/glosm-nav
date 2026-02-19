@@ -242,9 +242,8 @@ class BaseObjectNavPolicy(BasePolicy):
         )
         # Return all the object detections for object-centric policy
         # detections.filter_by_class(target_classes)
-        # det_conf_threshold = self._coco_threshold if has_coco else self._non_coco_threshold
-        # detections.filter_by_conf(det_conf_threshold)
-        detections.filter_by_conf(0.25)
+        det_conf_threshold = self._coco_threshold if has_coco else self._non_coco_threshold
+        detections.filter_by_conf(det_conf_threshold)
     
         if has_coco and has_non_coco and detections.num_detections == 0:
             # Retry with non-coco object detector
@@ -333,12 +332,6 @@ class BaseObjectNavPolicy(BasePolicy):
             self._observations_cache["object_map_rgbd"][0] = tuple(obs)
 
         for idx in range(len(detections.logits)):
-        
-            # skip detections that are not the target object
-            # this whole loop is to update the object map (Map 1)
-            if(detections.phrases[idx] != self._target_object):
-                continue
-        
             bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
             object_mask, _ = self._mobile_sam.segment_bbox(rgb, bbox_denorm.tolist())
         

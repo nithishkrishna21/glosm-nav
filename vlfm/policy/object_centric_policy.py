@@ -129,7 +129,168 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
 
     # _cache_observations the super method is used
 
-    # for _act, the implementation of ITMPolicyV2 is used here
+    def act(
+        self,
+        observations: Dict,
+        rnn_hidden_states: Any,
+        prev_actions: Any,
+        masks: Tensor,
+        deterministic: bool = False,
+    ) -> Any:
+        """
+        Starts the episode by 'initializing' and allowing robot to get its bearings
+        (e.g., spinning in place to get a good view of the scene).
+        Then, explores the scene until it finds the target object.
+        Once the target object is found, it navigates to the object.
+        """
+        print(f"\n==================================================")
+        self._pre_step(observations, masks)
+
+        object_map_rgbd = self._observations_cache["object_map_rgbd"]
+        detections = [
+            self._update_object_map(rgb, depth, tf, min_depth, max_depth, fx, fy)
+            for (rgb, depth, tf, min_depth, max_depth, fx, fy) in object_map_rgbd
+        ]
+
+        # keep track of the last set of detected objects, we will need it in object_centric_policy
+        # we are working with only one camera, so we just extract the first entry of detections
+        self._current_detections = detections[0]
+        if self._current_detections.num_detections > 0:
+            print(f"[Det] Found {self._current_detections.num_detections} objects")
+            
+        # Update Maps (Semantic & Value) using current detections and cache
+        self._update_value_map()
+
+        robot_xy = self._observations_cache["robot_xy"]
+        goal = self._get_target_object_location(robot_xy)
+
+        if not self._done_initializing:  # Initialize
+            mode = "initialize"
+            pointnav_action = self._initialize()
+        elif goal is None:  # Haven't found target object yet
+            mode = "explore"
+            pointnav_action = self._explore(observations)
+        else:
+            mode = "navigate"
+            pointnav_action = self._pointnav(goal[:2], stop=True)
+
+        action_numpy = pointnav_action.detach().cpu().numpy()[0]
+        if len(action_numpy) == 1:
+            action_numpy = action_numpy[0]
+        print(f"Step: {self._num_steps} | Mode: {mode} | Action: {action_numpy}")
+        print(f"==================================================")
+        self._policy_info.update(self._get_policy_info(detections[0]))
+        self._num_steps += 1
+
+        self._observations_cache = {}
+        self._did_reset = False
+
+        return pointnav_action, rnn_hidden_states
+
+    def _get_object_detections(self, img: np.ndarray) -> ObjectDetections:
+        target_classes = self._target_object.split("|")
+        has_coco = any(c in COCO_CLASSES for c in target_classes) and self._load_yolo
+        has_non_coco = any(c not in COCO_CLASSES for c in target_classes)
+
+        detections = (
+            self._coco_object_detector.predict(img)
+            if has_coco
+            else self._object_detector.predict(img, caption=self._non_coco_caption)
+        )
+        # Return all the object detections for object-centric policy
+        # detections.filter_by_class(target_classes)
+        # det_conf_threshold = self._coco_threshold if has_coco else self._non_coco_threshold
+        # detections.filter_by_conf(det_conf_threshold)
+        detections.filter_by_conf(0.25)
+    
+        if has_coco and has_non_coco and detections.num_detections == 0:
+            # Retry with non-coco object detector
+            detections = self._object_detector.predict(img, caption=self._non_coco_caption)
+            # Return all the object detections for object-centric policy
+            # detections.filter_by_class(target_classes)
+            detections.filter_by_conf(self._non_coco_threshold)
+
+        return detections
+
+    def _update_object_map(
+        self,
+        rgb: np.ndarray,
+        depth: np.ndarray,
+        tf_camera_to_episodic: np.ndarray,
+        min_depth: float,
+        max_depth: float,
+        fx: float,
+        fy: float,
+    ) -> ObjectDetections:
+        """
+        Updates the object map with the given rgb and depth images, and the given
+        transformation matrix from the camera to the episodic coordinate frame.
+
+        Args:
+            rgb (np.ndarray): The rgb image to use for updating the object map. Used for
+                object detection and Mobile SAM segmentation to extract better object
+                point clouds.
+            depth (np.ndarray): The depth image to use for updating the object map. It
+                is normalized to the range [0, 1] and has a shape of (height, width).
+            tf_camera_to_episodic (np.ndarray): The transformation matrix from the
+                camera to the episodic coordinate frame.
+            min_depth (float): The minimum depth value (in meters) of the depth image.
+            max_depth (float): The maximum depth value (in meters) of the depth image.
+            fx (float): The focal length of the camera in the x direction.
+            fy (float): The focal length of the camera in the y direction.
+
+        Returns:
+            ObjectDetections: The object detections from the object detector.
+        """
+        detections = self._get_object_detections(rgb)
+        height, width = rgb.shape[:2]
+        self._object_masks = np.zeros((height, width), dtype=np.uint8)
+        if np.array_equal(depth, np.ones_like(depth)) and detections.num_detections > 0:
+            depth = self._infer_depth(rgb, min_depth, max_depth)
+            obs = list(self._observations_cache["object_map_rgbd"][0])
+            obs[1] = depth
+            self._observations_cache["object_map_rgbd"][0] = tuple(obs)
+
+        for idx in range(len(detections.logits)):
+        
+            # skip detections that are not the target object
+            # this whole loop is to update the object map (Map 1)
+            if(detections.phrases[idx] != self._target_object):
+                continue
+        
+            bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
+            object_mask, _ = self._mobile_sam.segment_bbox(rgb, bbox_denorm.tolist())
+        
+            # If we are using vqa, then use the BLIP2 model to visually confirm whether
+            # the contours are actually correct.
+        
+            if self._use_vqa:
+                contours, _ = cv2.findContours(object_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                annotated_rgb = cv2.drawContours(rgb.copy(), contours, -1, (255, 0, 0), 2)
+                question = f"Question: {self._vqa_prompt}"
+                if not detections.phrases[idx].endswith("ing"):
+                    question += "a "
+                question += detections.phrases[idx] + "? Answer:"
+                answer = self._vqa.ask(annotated_rgb, question)
+                if not answer.lower().startswith("yes"):
+                    continue
+        
+            self._object_masks[object_mask > 0] = 1
+            self._object_map.update_map(
+                self._target_object,
+                depth,
+                object_mask,
+                tf_camera_to_episodic,
+                min_depth,
+                max_depth,
+                fx,
+                fy,
+            )
+
+        cone_fov = get_fov(fx, depth.shape[1])
+        self._object_map.update_explored(tf_camera_to_episodic, max_depth, cone_fov)
+
+        return detections
 
     def _update_value_map(self) -> None:
         """
@@ -146,7 +307,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # Step 2: Segment objects in current frame
         segmentations = self.object_segmenter.segment_objects(rgb, depth, 
                                                         camera_pose, self._current_detections)
-        print(f"DEBUG: Segmented {len(segmentations)} objects in this frame")
+        print(f"[Map] Segmented {len(segmentations)} objects in this frame")
 
         # Step 3: Update object map
         self.semantic_map.update(segmentations)
@@ -154,7 +315,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # Step 4: Get visible objects and compute scores
         visible_objects = self.semantic_map.get_visible_objects()
         scores = self.compute_object_target_similarity(visible_objects, self.target_text_features)
-        # print(f"DEBUG: {len(visible_objects)} visible objects in map, scores: {scores}\n")
+        # print(f"[Map] Visible: {len(visible_objects)}, Scores: {scores}\n")
 
         # Step 5: Update value map
         # OLD WAY: Paint individual objects (Sparse)
@@ -182,9 +343,9 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         vm_max = self._value_map._value_map.max()
         vm_nonzero = self._value_map._value_map[self._value_map._value_map != 0]
         if len(vm_nonzero) > 0:
-            print(f"DEBUG: Value map - min: {vm_min:.4f}, max: {vm_max:.4f}, nonzero_mean: {vm_nonzero.mean():.4f}, nonzero_count: {len(vm_nonzero)}")
+            print(f"[Map] ValueMap: min={vm_min:.2f}, max={vm_max:.2f}, count={len(vm_nonzero)}")
         else:
-            print(f"DEBUG: Value map - ALL ZEROS (no objects painted)")
+            print(f"[Map] ValueMap: Empty")
 
         # Step 6: Update agent trajectory
         self._value_map.update_agent_traj(
@@ -204,7 +365,8 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         Same as ITMPolicyV2 - uses value map's sort_waypoints().
         """
         sorted_frontiers, sorted_values = self._value_map.sort_waypoints(frontiers, 0.5)
-        print(f"[DEBUG] Frontiers: {len(frontiers)}, Top 3 values: {sorted_values[:3] if len(sorted_values) > 0 else 'none'}")
+        if len(frontiers) > 0:
+            print(f"[Nav] Frontiers: {len(frontiers)}, Top 3 Vals: {sorted_values[:3] if len(sorted_values) > 0 else 'none'}")
         return sorted_frontiers, sorted_values
 
     # new logic
@@ -231,10 +393,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         raw_cosine = self.cos(object_feats, target_text_feats)
         scores = raw_cosine.clone()
              
-        # DEBUG: Print stats
         if len(scores) > 0:
-            print(f"[DEBUG] Scores - Max Cosine: {raw_cosine.max():.4f}")
-            # if scores.max() > 0.1:
-            #     print(f"[DEBUG] FOUND CANDIDATE! Score: {scores.max():.4f}")
+            print(f"[Map] Scores - Max Cosine: {raw_cosine.max():.4f}")
 
         return np.atleast_1d(scores.squeeze(-1).float().cpu().numpy())
