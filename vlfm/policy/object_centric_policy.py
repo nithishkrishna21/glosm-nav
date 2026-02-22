@@ -23,18 +23,32 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor
-
+from habitat.tasks.nav.object_nav_task import ObjectGoalSensor
 from vlfm.policy.itm_policy import BaseITMPolicy, ITMPolicyV2
-from vlfm.policy.habitat_policies import HabitatMixin
+from vlfm.policy.habitat_policies import (
+    HM3D_ID_TO_NAME,
+    MP3D_ID_TO_NAME,
+    HabitatMixin,
+)
 from vlfm.mapping.value_map import ValueMap
 from vlfm.policy.utils.acyclic_enforcer import AcyclicEnforcer
+from vlfm.mapping.object_point_cloud_map import ObjectPointCloudMap
+from vlfm.mapping.obstacle_map import ObstacleMap
+from vlfm.obs_transformers.utils import image_resize
+from vlfm.policy.utils.pointnav_policy import WrappedPointNavResNetPolicy
+from vlfm.utils.geometry_utils import get_fov, rho_theta
 
 # Our object-centric modules (Stage 1 & 2)
 from vlfm.object_centric.object_segmentation import ObjectSegmenter
 from vlfm.object_centric.semantic_map import SemanticMap, SemanticMapObject
 from vlfm.object_centric.sam_segmenter import MobileSAMClient
 from vlfm.object_centric.clip_encoder import CLIPClient
+from vlfm.vlm.coco_classes import COCO_CLASSES
+from vlfm.vlm.grounding_dino import GroundingDINOClient, ObjectDetections
 from habitat_baselines.common.baseline_registry import baseline_registry
+from habitat_baselines.rl.ppo.policy import PolicyActionData
+
+DEBUG = True
 
 
 @baseline_registry.register_policy
@@ -137,55 +151,81 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         masks: Tensor,
         deterministic: bool = False,
     ) -> Any:
-        """
-        Starts the episode by 'initializing' and allowing robot to get its bearings
-        (e.g., spinning in place to get a good view of the scene).
-        Then, explores the scene until it finds the target object.
-        Once the target object is found, it navigates to the object.
-        """
-        print(f"\n==================================================")
-        self._pre_step(observations, masks)
 
-        object_map_rgbd = self._observations_cache["object_map_rgbd"]
-        detections = [
-            self._update_object_map(rgb, depth, tf, min_depth, max_depth, fx, fy)
-            for (rgb, depth, tf, min_depth, max_depth, fx, fy) in object_map_rgbd
-        ]
+        if ObjectGoalSensor.cls_uuid in observations:
+            obj_goal = observations[ObjectGoalSensor.cls_uuid]
+            if isinstance(obj_goal, torch.Tensor) and obj_goal.dtype in [torch.int, torch.long]:
+                object_id = obj_goal[0].item()
+                if hasattr(observations, "to_tree"):
+                    observations = observations.to_tree()
+                
+                if self._dataset_type == "hm3d":
+                    observations[ObjectGoalSensor.cls_uuid] = HM3D_ID_TO_NAME[object_id]
+                elif self._dataset_type == "mp3d":
+                    observations[ObjectGoalSensor.cls_uuid] = MP3D_ID_TO_NAME[object_id]
+                    # Update non-coco caption for MP3D (critical for Yolo World)
+                    self._non_coco_caption = " . ".join(MP3D_ID_TO_NAME).replace("|", " . ") + " ."
+        
+        try:
+            """
+            Starts the episode by 'initializing' and allowing robot to get its bearings
+            (e.g., spinning in place to get a good view of the scene).
+            Then, explores the scene until it finds the target object.
+            Once the target object is found, it navigates to the object.
+            """
+            print(f"\n==================================================")
+            self._pre_step(observations, masks)
 
-        # keep track of the last set of detected objects, we will need it in object_centric_policy
-        # we are working with only one camera, so we just extract the first entry of detections
-        self._current_detections = detections[0]
-        if self._current_detections.num_detections > 0:
-            print(f"[Det] Found {self._current_detections.num_detections} objects")
+            object_map_rgbd = self._observations_cache["object_map_rgbd"]
+            detections = [
+                self._update_object_map(rgb, depth, tf, min_depth, max_depth, fx, fy)
+                for (rgb, depth, tf, min_depth, max_depth, fx, fy) in object_map_rgbd
+            ]
+
+            # _current_detections no longer needed: _update_value_map runs its own detection
+            # on value_map_rgbd to guarantee bbox alignment with the segmented image
+            # self._current_detections = detections[0]
+            # if self._current_detections.num_detections > 0:
+            #     print(f"[Det] Found {self._current_detections.num_detections} objects")
+
+            # Update Maps (Semantic & Value) — detections run internally on value_map_rgbd
+            self._update_value_map()
+
+            robot_xy = self._observations_cache["robot_xy"]
+            goal = self._get_target_object_location(robot_xy)
+
+            if not self._done_initializing:  # Initialize
+                mode = "initialize"
+                pointnav_action = self._initialize()
+            elif goal is None:  # Haven't found target object yet
+                mode = "explore"
+                pointnav_action = self._explore(observations)
+            else:
+                mode = "navigate"
+                pointnav_action = self._pointnav(goal[:2], stop=True)
+
+            action_numpy = pointnav_action.detach().cpu().numpy()[0]
+            if len(action_numpy) == 1:
+                action_numpy = action_numpy[0]
+            print(f"Step: {self._num_steps} | Mode: {mode} | Action: {action_numpy}")
+            print(f"==================================================")
+            self._policy_info.update(self._get_policy_info(detections[0]))
+            self._num_steps += 1
+
+            self._observations_cache = {}
+            self._did_reset = False
+
+            # return pointnav_action, rnn_hidden_states
+            action = pointnav_action
+
+        except StopIteration:
+            action = self._stop_action
             
-        # Update Maps (Semantic & Value) using current detections and cache
-        self._update_value_map()
-
-        robot_xy = self._observations_cache["robot_xy"]
-        goal = self._get_target_object_location(robot_xy)
-
-        if not self._done_initializing:  # Initialize
-            mode = "initialize"
-            pointnav_action = self._initialize()
-        elif goal is None:  # Haven't found target object yet
-            mode = "explore"
-            pointnav_action = self._explore(observations)
-        else:
-            mode = "navigate"
-            pointnav_action = self._pointnav(goal[:2], stop=True)
-
-        action_numpy = pointnav_action.detach().cpu().numpy()[0]
-        if len(action_numpy) == 1:
-            action_numpy = action_numpy[0]
-        print(f"Step: {self._num_steps} | Mode: {mode} | Action: {action_numpy}")
-        print(f"==================================================")
-        self._policy_info.update(self._get_policy_info(detections[0]))
-        self._num_steps += 1
-
-        self._observations_cache = {}
-        self._did_reset = False
-
-        return pointnav_action, rnn_hidden_states
+        return PolicyActionData(
+            actions=action,
+            rnn_hidden_states=rnn_hidden_states,
+            policy_info=[self._policy_info],
+        )
 
     def _get_object_detections(self, img: np.ndarray) -> ObjectDetections:
         target_classes = self._target_object.split("|")
@@ -201,7 +241,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # detections.filter_by_class(target_classes)
         # det_conf_threshold = self._coco_threshold if has_coco else self._non_coco_threshold
         # detections.filter_by_conf(det_conf_threshold)
-        detections.filter_by_conf(0.25)
+        detections.filter_by_conf(0.4)
     
         if has_coco and has_non_coco and detections.num_detections == 0:
             # Retry with non-coco object detector
@@ -304,9 +344,14 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # Step 1: Get observations
         rgb, depth, camera_pose, min_depth, max_depth, fov = self._observations_cache["value_map_rgbd"][0]
 
-        # Step 2: Segment objects in current frame
-        segmentations = self.object_segmenter.segment_objects(rgb, depth, 
-                                                        camera_pose, self._current_detections)
+        # Step 2: Run detection on value_map_rgbd image (guarantees bbox alignment with rgb)
+        value_map_detections = self._get_object_detections(rgb)
+        if value_map_detections.num_detections > 0:
+            print(f"[Map] Detected {value_map_detections.num_detections} objects in value_map frame")
+
+        # Step 3: Segment objects in current frame using aligned detections
+        segmentations = self.object_segmenter.segment_objects(rgb, depth,
+                                                        camera_pose, value_map_detections)
         print(f"[Map] Segmented {len(segmentations)} objects in this frame")
 
         # Step 3: Update object map
