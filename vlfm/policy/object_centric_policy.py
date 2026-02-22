@@ -299,22 +299,18 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
                 continue
         
             bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
-            object_mask, _ = self._mobile_sam.segment_bbox(rgb, bbox_denorm.tolist())
-        
-            # If we are using vqa, then use the BLIP2 model to visually confirm whether
-            # the contours are actually correct.
-        
-            if self._use_vqa:
-                contours, _ = cv2.findContours(object_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                annotated_rgb = cv2.drawContours(rgb.copy(), contours, -1, (255, 0, 0), 2)
-                question = f"Question: {self._vqa_prompt}"
-                if not detections.phrases[idx].endswith("ing"):
-                    question += "a "
-                question += detections.phrases[idx] + "? Answer:"
-                answer = self._vqa.ask(annotated_rgb, question)
-                if not answer.lower().startswith("yes"):
+            x1, y1, x2, y2 = bbox_denorm.astype(int)
+
+            if self.target_text_features is not None:
+                crop = rgb[y1:y2, x1:x2]
+                crop_features = self.encoder.encode_image(crop).squeeze(0)
+                verify_score = self.cos(crop_features, self.target_text_features).item()
+                print(f"[Verify] '{detections.phrases[idx]}' CLIP score={verify_score:.3f}")
+                if verify_score < 0.30:
                     continue
-        
+
+            object_mask, _ = self._mobile_sam.segment_bbox(rgb, bbox_denorm.tolist())
+
             self._object_masks[object_mask > 0] = 1
             self._object_map.update_map(
                 self._target_object,
