@@ -291,23 +291,31 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             obs[1] = depth
             self._observations_cache["object_map_rgbd"][0] = tuple(obs)
 
+        target_classes = self._target_object.split("|")
+        has_coco = any(c in COCO_CLASSES for c in target_classes) and self._load_yolo
+        # ObjectMap uses strict baseline thresholds (0.8 COCO / 0.4 non-COCO)
+        # SemanticMap (in _update_value_map) uses its own broader 0.4 detections
+        objectmap_conf_threshold = self._coco_threshold if has_coco else self._non_coco_threshold
+
         for idx in range(len(detections.logits)):
-        
-            # skip detections that are not the target object
-            # this whole loop is to update the object map (Map 1)
-            if(detections.phrases[idx] != self._target_object):
+
+            # Strict ObjectMap filtering: target class + baseline confidence
+            if detections.phrases[idx] != self._target_object:
+                continue
+            if detections.logits[idx] < objectmap_conf_threshold:
                 continue
         
             bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
             x1, y1, x2, y2 = bbox_denorm.astype(int)
 
-            if self.target_text_features is not None:
-                crop = rgb[y1:y2, x1:x2]
-                crop_features = self.encoder.encode_image(crop).squeeze(0)
-                verify_score = self.cos(crop_features, self.target_text_features).item()
-                print(f"[Verify] '{detections.phrases[idx]}' CLIP score={verify_score:.3f}")
-                if verify_score < 0.30:
-                    continue
+            if self._use_vqa:
+                if self.target_text_features is not None:
+                    crop = rgb[y1:y2, x1:x2]
+                    crop_features = self.encoder.encode_image(crop).squeeze(0)
+                    verify_score = self.cos(crop_features, self.target_text_features).item()
+                    print(f"[Verify] '{detections.phrases[idx]}' CLIP score={verify_score:.3f}")
+                    if verify_score < 0.30:
+                        continue
 
             object_mask, _ = self._mobile_sam.segment_bbox(rgb, bbox_denorm.tolist())
 
