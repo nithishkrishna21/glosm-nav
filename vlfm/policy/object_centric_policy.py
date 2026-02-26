@@ -250,6 +250,13 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             # detections.filter_by_class(target_classes)
             detections.filter_by_conf(self._non_coco_threshold)
 
+        # Filter background classes — adapted from ConceptGraphs (streamlined_detections.py):
+        bg_classes = ["wall", "floor", "ceiling", "door", "window"]
+        keep = torch.tensor(
+            [p not in bg_classes for p in detections.phrases], dtype=torch.bool
+        )
+        detections._filter(keep)
+
         return detections
 
     def _update_object_map(
