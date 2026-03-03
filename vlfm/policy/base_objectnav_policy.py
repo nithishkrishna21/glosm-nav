@@ -18,8 +18,8 @@ from vlfm.utils.geometry_utils import get_fov, rho_theta
 from vlfm.vlm.blip2 import BLIP2Client
 from vlfm.vlm.coco_classes import COCO_CLASSES
 from vlfm.vlm.grounding_dino import GroundingDINOClient, ObjectDetections
-# from vlfm.vlm.sam import MobileSAMClient
-from vlfm.object_centric.sam_segmenter import MobileSAMClient
+from vlfm.vlm.sam import MobileSAMClient
+# from vlfm.object_centric.sam_segmenter import MobileSAMClient
 from vlfm.vlm.yolov7 import YOLOv7Client
 
 try:
@@ -115,7 +115,6 @@ class BaseObjectNavPolicy(BasePolicy):
         deterministic: bool = False,
     ) -> Any:
         print(f"\n==================================================")
-        print(f"START STEP: {self._num_steps}")
         """
         Starts the episode by 'initializing' and allowing robot to get its bearings
         (e.g., spinning in place to get a good view of the scene).
@@ -132,8 +131,8 @@ class BaseObjectNavPolicy(BasePolicy):
 
         # keep track of the last set of detected objects, we will need it in object_centric_policy
         # we are working with only one camera, so we just extract the first entry of detections
-        self._current_detections = detections[0]
-        print(f"DEBUG: Detector found {self._current_detections.num_detections} objects")
+        # self._current_detections = detections[0]
+        # print(f"DEBUG: Detector found {self._current_detections.num_detections} objects")
 
         robot_xy = self._observations_cache["robot_xy"]
         goal = self._get_target_object_location(robot_xy)
@@ -240,16 +239,14 @@ class BaseObjectNavPolicy(BasePolicy):
             if has_coco
             else self._object_detector.predict(img, caption=self._non_coco_caption)
         )
-        # Return all the object detections for object-centric policy
-        # detections.filter_by_class(target_classes)
+        detections.filter_by_class(target_classes)
         det_conf_threshold = self._coco_threshold if has_coco else self._non_coco_threshold
         detections.filter_by_conf(det_conf_threshold)
     
         if has_coco and has_non_coco and detections.num_detections == 0:
             # Retry with non-coco object detector
             detections = self._object_detector.predict(img, caption=self._non_coco_caption)
-            # Return all the object detections for object-centric policy
-            # detections.filter_by_class(target_classes)
+            detections.filter_by_class(target_classes)
             detections.filter_by_conf(self._non_coco_threshold)
 
         return detections
@@ -333,7 +330,7 @@ class BaseObjectNavPolicy(BasePolicy):
 
         for idx in range(len(detections.logits)):
             bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
-            object_mask, _ = self._mobile_sam.segment_bbox(rgb, bbox_denorm.tolist())
+            object_mask = self._mobile_sam.segment_bbox(rgb, bbox_denorm.tolist())
         
             # If we are using vqa, then use the BLIP2 model to visually confirm whether
             # the contours are actually correct.
