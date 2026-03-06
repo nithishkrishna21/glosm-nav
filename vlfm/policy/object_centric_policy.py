@@ -361,30 +361,29 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             print(f"[Map] Detected {value_map_detections.num_detections} objects in value_map frame")
 
         # Step 3: Segment objects in current frame using aligned detections
-        segmentations = self.object_segmenter.segment_objects(rgb, depth,
-                                                        camera_pose, value_map_detections)
+        # segmentations = self.object_segmenter.segment_objects(rgb, depth,
+        #                                                 camera_pose, value_map_detections)
+        globalFallback, segmentations, global_features = self.object_segmenter.segment_objects(rgb, depth,
+                                                                                        camera_pose, value_map_detections)
         print(f"[Map] Segmented {len(segmentations)} objects in this frame")
 
-        # Step 3: Update object map
+        # Step 4: Update semantic map
         self.semantic_map.update(segmentations)
 
-        # Step 4: Get visible objects and compute scores
+        # Step 5: Get visible objects
         visible_objects = self.semantic_map.get_visible_objects()
-        scores = self.compute_object_target_similarity(visible_objects, self.target_text_features)
-        # print(f"[Map] Visible: {len(visible_objects)}, Scores: {scores}\n")
-
-        # Step 5: Update value map
-        # OLD WAY: Paint individual objects (Sparse)
-        # self._value_map.update_map_object_wise(visible_objects, scores, depth, 
-        # camera_pose, min_depth, max_depth, fov)
-
-        # NEW WAY: Paint entire FOV with MAX score (Dense)
-        # matches original VLFM/BLIP2 behavior but with SigLIP object scores
-        if len(scores) > 0:
-            max_score = float(scores.max())
+        
+        # Step 6: Compute score to update the value map
+        max_score = None
+        if globalFallback or not visible_objects:
+            max_score = self.compute_cosine_similarity(global_features, self.target_text_features)
         else:
-            max_score = 0.0
-            
+            scores = self.compute_object_target_similarities(visible_objects, self.target_text_features)
+            # print(f"[Map] Visible: {len(visible_objects)}, Scores: {scores}\n")
+            max_score = float(scores.max())
+           
+        # Step 7: Update value map
+        # Paint entire FOV with MAX score (Dense)
         self._value_map.update_map(
             np.array([max_score]), 
             depth, 
@@ -403,7 +402,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         else:
             print(f"[Map] ValueMap: Empty")
 
-        # Step 6: Update agent trajectory
+        # Step 8: Update agent trajectory
         self._value_map.update_agent_traj(
             self._observations_cache["robot_xy"],
             self._observations_cache["robot_heading"]
@@ -425,8 +424,21 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             print(f"[Nav] Frontiers: {len(frontiers)}, Top 3 Vals: {sorted_values[:3] if len(sorted_values) > 0 else 'none'}")
         return sorted_frontiers, sorted_values
 
-    # new logic
-    def compute_object_target_similarity(
+
+    def compute_cosine_similarity(
+        self,
+        global_features: torch.Tensor,
+        target_text_feats: torch.Tensor
+    ) -> float:
+        """
+        Compute cosine similarity between global features and target text features.
+        """
+        global_features = global_features.squeeze(0)
+        score = self.cos(global_features, target_text_feats).item()
+        print(f"[Map] Scores - Global Features Cosine: {score:.4f}")
+        return score
+
+    def compute_object_target_similarities(
         self, 
         visible_objects: List[SemanticMapObject],
         target_text_feats: torch.Tensor

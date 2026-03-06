@@ -103,7 +103,7 @@ class ObjectSegmenter:
         depth: np.ndarray,         # (H, W) depth image
         camera_pose: np.ndarray,   # (4, 4) camera-to-world transform
         detections: List[Dict]     # Objects detected by GroundingDINO
-    ) -> List[Segmentation]:
+    ) -> Tuple[bool, List[Segmentation], torch.Tensor]:
         """
         Segment objects in a single frame and extract their features + point clouds.
 
@@ -115,26 +115,24 @@ class ObjectSegmenter:
         Returns:
             List of Detection objects, each with mask, features, and point cloud
         """
+
+        globalFallback = False
+
         # ══════════════════════════════════════════════════════════════
         # STEP 1: Segment image with SAM
         # ══════════════════════════════════════════════════════════════
 
-        # masks = self._segment_with_sam(rgb)
-
-        # If Grounding DINO could not detect any objects in the current frame, 
-        # run Automatic Mask Generation
+        # If Grounding DINO OR YOLO could not detect any objects in the current frame, 
+        # revert to global image scoring
         if detections is None or detections.num_detections == 0:
-            if DEBUG:
-                print("Running Automatic Mask Generation")
-            masks = self._segment_with_sam(rgb)
+            globalFallback = True
         
         else:
             if DEBUG:
                 print("Running SAM with BBoxes")
             masks = self._segment_image_with_bboxes(rgb, detections)
-
-        if DEBUG:
-            print(f"DEBUG: Raw masks from SAM: {len(masks)}")
+            if DEBUG:
+                print(f"DEBUG: Raw masks from SAM: {len(masks)}")
 
         # # Discard low-confidence masks 
         # masks = [m for m in masks if m['predicted_iou'] > 0.70
@@ -148,6 +146,10 @@ class ObjectSegmenter:
         # ══════════════════════════════════════════════════════════════
 
         global_features = self._extract_global_features(rgb)
+
+        if globalFallback is True:
+            # boolean flag to indicate global fallback, empty list of segments, global features
+            return True, [], global_features
 
         # ══════════════════════════════════════════════════════════════
         # STEP 3: Get all the valid masks, crops, features and point clouds
@@ -163,7 +165,7 @@ class ObjectSegmenter:
             bbox = mask_data['bbox']
 
             # ──────────────────────────────────────────────────────────
-            # STEP 3a: Extract 3 crops for HOV-SG fusion
+            # STEP 3a: Extract 2 crops for HOV-SG fusion
             # ──────────────────────────────────────────────────────────
 
             crop_bbox = self._create_bbox_crop(rgb, bbox, bbox_margin=self.bbox_margin)
@@ -205,7 +207,8 @@ class ObjectSegmenter:
         # ══════════════════════════════════════════════════════════════        
 
         if not crop_bboxes:
-            return []
+            # if no valid masks, return empty list of segments and global features
+            return True, [], global_features
 
         cropped_feats = self._extract_features(np.stack(crop_bboxes))
         cropped_masked_feats = self._extract_features(np.stack(crop_masked_bboxes))
@@ -231,7 +234,7 @@ class ObjectSegmenter:
             )
             segmentations.append(segmentation)
 
-        return segmentations        
+        return False, segmentations, torch.empty(1, 768)       
 
     # ══════════════════════════════════════════════════════════════════
     # Helper Methods
