@@ -186,3 +186,11 @@ habitat-lab/
 GroundingDINO/
 __pycache__/
 *.pyc
+
+# local folders
+data/
+tb/
+outputs/
+lockfiles/
+*.pt
+yolov7/
