@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Modified to include SigLIP2 instead of BLIP2
 
 # Ensure you have 'export VLFM_PYTHON=<PATH_TO_PYTHON>' in your .bashrc, where
 # <PATH_TO_PYTHON> is the path to the python executable for your conda env
 # (e.g., PATH_TO_PYTHON=`conda activate <env_name> && which python`)
 
-export VLFM_PYTHON=${VLFM_PYTHON:-`which python`}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VLFM_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# export VLFM_PYTHON=${VLFM_PYTHON:-`which python`}
+export VLFM_PYTHON=${VLFM_PYTHON:-/data/nshreen1/anaconda3/envs/vlfm_v2/bin/python}
+export VLFM_DATA=${VLFM_DATA:-${VLFM_ROOT}/data}
 export MOBILE_SAM_CHECKPOINT=${MOBILE_SAM_CHECKPOINT:-data/mobile_sam.pt}
 export GROUNDING_DINO_CONFIG=${GROUNDING_DINO_CONFIG:-GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py}
 export GROUNDING_DINO_WEIGHTS=${GROUNDING_DINO_WEIGHTS:-data/groundingdino_swint_ogc.pth}
@@ -29,20 +33,18 @@ tmux split-window -h -t ${session_name}:0.2
 
 # Run commands in each pane with explicit conda activation and cd
 # Using vlfm_v2 environment for all models (upgraded PyTorch + transformers for SigLIP2)
-tmux send-keys -t ${session_name}:0.0 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.grounding_dino --port ${GROUNDING_DINO_PORT}" C-m
-# tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.blip2itm --port ${BLIP2ITM_PORT}" C-m  # Commented out
-# tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.siglip2 --port ${SIGLIP2_PORT}" C-m
-tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.clip_encoder --port ${CLIP_PORT}" C-m
-tmux send-keys -t ${session_name}:0.2 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.object_centric.sam_segmenter --port ${SAM_PORT}" C-m
-tmux send-keys -t ${session_name}:0.3 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.yolov7 --port ${YOLOV7_PORT}" C-m
+tmux send-keys -t ${session_name}:0.0 "conda activate vlfm_v2 && cd ${VLFM_ROOT} && ${VLFM_PYTHON} -m vlfm.vlm.grounding_dino --port ${GROUNDING_DINO_PORT}" C-m
+# tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd /workspace/vlfm && ${VLFM_PYTHON} -m vlfm.vlm.blip2itm --port ${BLIP2ITM_PORT}" C-m
+tmux send-keys -t ${session_name}:0.1 "conda activate vlfm_v2 && cd ${VLFM_ROOT} && ${VLFM_PYTHON} -m vlfm.object_centric.clip_encoder --port ${CLIP_PORT}" C-m
+tmux send-keys -t ${session_name}:0.2 "conda activate vlfm_v2 && cd ${VLFM_ROOT} && ${VLFM_PYTHON} -m vlfm.object_centric.sam_segmenter --port ${SAM_PORT}" C-m
+tmux send-keys -t ${session_name}:0.3 "conda activate vlfm_v2 && cd ${VLFM_ROOT} && ${VLFM_PYTHON} -m vlfm.vlm.yolov7 --port ${YOLOV7_PORT}" C-m
 
 # Attach to the tmux session to view the windows
 echo "Created tmux session '${session_name}'. You must wait up to 90 seconds for the model weights to finish being loaded."
 echo ""
 echo "Model servers:"
 echo "  - Grounding DINO: localhost:${GROUNDING_DINO_PORT}"
-# echo "  - SigLIP2:        localhost:${SIGLIP2_PORT}  (replaces BLIP2)"
-echo "  - CLIP:           localhost:${CLIP_PORT}     (replaces SigLIP2)"
+echo "  - CLIP:           localhost:${CLIP_PORT}    "
 echo "  - SAM:            localhost:${SAM_PORT}"
 echo "  - YOLOv7:         localhost:${YOLOV7_PORT}"
 echo ""

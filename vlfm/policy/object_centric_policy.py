@@ -324,7 +324,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
                     if verify_score < 0.30:
                         continue
 
-            object_mask, _ = self._mobile_sam.segment_bbox(rgb, bbox_denorm.tolist())
+            object_mask, _ = self.mobile_sam_client.segment_bbox(rgb, bbox_denorm.tolist())
 
             self._object_masks[object_mask > 0] = 1
             self._object_map.update_map(
