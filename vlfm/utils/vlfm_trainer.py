@@ -354,4 +354,6 @@ class VLFMTrainer(PPOTrainer):
         for k, v in metrics.items():
             writer.add_scalar(f"eval_metrics/{k}", v, step_id)
 
+        writer.flush()
+
         self.envs.close()
