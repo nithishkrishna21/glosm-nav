@@ -258,8 +258,8 @@ class SemanticMap:
                 # Optional: skip if bounding boxes don't overlap (optimization)
                 # This saves computation for objects that are far apart
                 iou = compute_3d_iou_batch(
-                    self.objects[j].bbox_3d.unsqueeze(0),  # (1, 8, 3)
-                    compute_3d_bbox_from_points(segmentations[i].point_cloud).unsqueeze(0)  # (1, 8, 3)
+                    self.objects[j].bbox_3d.unsqueeze(0),  # (1, 8, 3) (CUDA)
+                    compute_3d_bbox_from_points(segmentations[i].point_cloud).unsqueeze(0).to(self.device)  # (1, 8, 3)
                 )
                 if iou.item() < 1e-6:
                     continue

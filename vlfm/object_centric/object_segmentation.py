@@ -128,11 +128,11 @@ class ObjectSegmenter:
             globalFallback = True
         
         else:
-            if DEBUG:
-                print("Running SAM with BBoxes")
+            # if DEBUG:
+            #     print("Running SAM with BBoxes")
             masks = self._segment_image_with_bboxes(rgb, detections)
-            if DEBUG:
-                print(f"DEBUG: Raw masks from SAM: {len(masks)}")
+            # if DEBUG:
+            #     print(f"DEBUG: Raw masks from SAM: {len(masks)}")
 
         # # Discard low-confidence masks 
         # masks = [m for m in masks if m['predicted_iou'] > 0.70

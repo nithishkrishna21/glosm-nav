@@ -387,6 +387,7 @@ class BaseObjectNavPolicy(BasePolicy):
 class VLFMConfig:
     name: str = "HabitatITMPolicy"
     text_prompt: str = "Seems like there is a target_object ahead."
+    geometric_sim_type: str = "iou"
     pointnav_policy_path: str = "data/pointnav_weights.pth"
     depth_image_shape: Tuple[int, int] = (224, 224)
     pointnav_stop_radius: float = 0.9

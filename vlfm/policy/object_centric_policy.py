@@ -66,6 +66,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         self,
         text_prompt: str,
         camera_intrinsics: np.ndarray,
+        geometric_sim_type: str = "iou",
         encoder = None,
         *args: Any,
         **kwargs: Any,
@@ -88,7 +89,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
 
         self.semantic_map = SemanticMap(
             similarity_threshold=0.7,
-            geometric_sim_type="iou"
+            geometric_sim_type=geometric_sim_type
         )
 
         # Store the text prompt template (e.g., "Seems like there is a target_object ahead.")
@@ -131,9 +132,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             prompt = f"a photo of a {self._target_object.lower()}"
             self.target_text_features = self.encoder.encode_text(prompt).squeeze(0)  # [1, 768] -> [768]
             print(f"[Encoder] Encoded target: '{prompt}'")
-            # print(f"[DEBUG] Text features shape: {self.target_text_features.shape}")
-            # print(f"[DEBUG] Text features norm: {torch.norm(self.target_text_features):.4f}")
-            # print(f"[DEBUG] Text features sample: {self.target_text_features[:5]}\n")
 
     def _initialize(self) -> Tensor:
         return super()._initialize()
@@ -181,12 +179,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
                 self._update_object_map(rgb, depth, tf, min_depth, max_depth, fx, fy)
                 for (rgb, depth, tf, min_depth, max_depth, fx, fy) in object_map_rgbd
             ]
-
-            # _current_detections no longer needed: _update_value_map runs its own detection
-            # on value_map_rgbd to guarantee bbox alignment with the segmented image
-            # self._current_detections = detections[0]
-            # if self._current_detections.num_detections > 0:
-            #     print(f"[Det] Found {self._current_detections.num_detections} objects")
 
             # Update Maps (Semantic & Value) — detections run internally on value_map_rgbd
             self._update_value_map()
@@ -357,15 +349,15 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
 
         # Step 2: Run detection on value_map_rgbd image (guarantees bbox alignment with rgb)
         value_map_detections = self._get_object_detections(rgb)
-        if value_map_detections.num_detections > 0:
-            print(f"[Map] Detected {value_map_detections.num_detections} objects in value_map frame")
+        # if value_map_detections.num_detections > 0:
+            # print(f"[Map] Detected {value_map_detections.num_detections} objects in value_map frame")
 
         # Step 3: Segment objects in current frame using aligned detections
         # segmentations = self.object_segmenter.segment_objects(rgb, depth,
         #                                                 camera_pose, value_map_detections)
         globalFallback, segmentations, global_features = self.object_segmenter.segment_objects(rgb, depth,
                                                                                         camera_pose, value_map_detections)
-        print(f"[Map] Segmented {len(segmentations)} objects in this frame")
+        # print(f"[Map] Segmented {len(segmentations)} objects in this frame")
 
         # Step 4: Update semantic map
         self.semantic_map.update(segmentations)
@@ -394,13 +386,13 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         )
         
         # Debug: Check value map statistics
-        vm_min = self._value_map._value_map.min()
-        vm_max = self._value_map._value_map.max()
-        vm_nonzero = self._value_map._value_map[self._value_map._value_map != 0]
-        if len(vm_nonzero) > 0:
-            print(f"[Map] ValueMap: min={vm_min:.2f}, max={vm_max:.2f}, count={len(vm_nonzero)}")
-        else:
-            print(f"[Map] ValueMap: Empty")
+        # vm_min = self._value_map._value_map.min()
+        # vm_max = self._value_map._value_map.max()
+        # vm_nonzero = self._value_map._value_map[self._value_map._value_map != 0]
+        # if len(vm_nonzero) > 0:
+        #     print(f"[Map] ValueMap: min={vm_min:.2f}, max={vm_max:.2f}, count={len(vm_nonzero)}")
+        # else:
+        #     print(f"[Map] ValueMap: Empty")
 
         # Step 8: Update agent trajectory
         self._value_map.update_agent_traj(
@@ -420,8 +412,8 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         Same as ITMPolicyV2 - uses value map's sort_waypoints().
         """
         sorted_frontiers, sorted_values = self._value_map.sort_waypoints(frontiers, 0.5)
-        if len(frontiers) > 0:
-            print(f"[Nav] Frontiers: {len(frontiers)}, Top 3 Vals: {sorted_values[:3] if len(sorted_values) > 0 else 'none'}")
+        # if len(frontiers) > 0:
+            # print(f"[Nav] Frontiers: {len(frontiers)}, Top 3 Vals: {sorted_values[:3] if len(sorted_values) > 0 else 'none'}")
         return sorted_frontiers, sorted_values
 
 
@@ -435,7 +427,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         """
         global_features = global_features.squeeze(0)
         score = self.cos(global_features, target_text_feats).item()
-        print(f"[Map] Scores - Global Features Cosine: {score:.4f}")
+        # print(f"[Map] Scores - Global Features Cosine: {score:.4f}")
         return score
 
     def compute_object_target_similarities(
@@ -461,7 +453,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         raw_cosine = self.cos(object_feats, target_text_feats)
         scores = raw_cosine.clone()
              
-        if len(scores) > 0:
-            print(f"[Map] Scores - Max Cosine: {raw_cosine.max():.4f}")
+        # if len(scores) > 0:
+        #     print(f"[Map] Scores - Max Cosine: {raw_cosine.max():.4f}")
 
         return np.atleast_1d(scores.squeeze(-1).float().cpu().numpy())
