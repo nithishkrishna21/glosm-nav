@@ -4,7 +4,7 @@
 export CUDA_VISIBLE_DEVICES=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VLFM_ROOT="$(dirname "$SCRIPT_DIR")"
+VLFM_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 export VLFM_PYTHON=${VLFM_PYTHON:-/data/nshreen1/anaconda3/envs/vlfm_v2/bin/python}
 export GROUNDING_DINO_PORT=12181

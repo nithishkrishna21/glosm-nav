@@ -197,3 +197,4 @@ outputs/
 scripts/dataset_download
 yolov7/
 traced_model.pt
+poster_assets/

@@ -186,8 +186,10 @@ class SemanticMap:
         """
         # print(f"[DEBUG] Geometric Sim Type: {self.geometric_sim_type}")
         if self.geometric_sim_type == "iou":
+            print("[DEBUG] Using IoU for geometric similarity")
             return self._compute_iou_similarities(segmentations)
         elif self.geometric_sim_type == "overlap":
+            print("[DEBUG] Using nnratio for geometric similarity")
             return self._compute_nnratio_similarities(segmentations)
         else:
             raise ValueError(f"Unknown geometric_sim_type: {self.geometric_sim_type}")
