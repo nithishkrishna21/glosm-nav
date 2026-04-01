@@ -12,7 +12,7 @@ export SAM_PORT=15183
 export YOLOV7_PORT=15184
 export CLIP_PORT=15186
 
-session_name=vlm_servers_ablation4
+session_name=vlm_servers_config4
 
 tmux new-session -d -s ${session_name}
 tmux split-window -v -t ${session_name}:0
@@ -24,4 +24,4 @@ tmux send-keys -t ${session_name}:0.1 "export CUDA_VISIBLE_DEVICES=3 && conda ac
 tmux send-keys -t ${session_name}:0.2 "export CUDA_VISIBLE_DEVICES=3 && conda activate vlfm_v2 && cd ${VLFM_ROOT} && ${VLFM_PYTHON} -m vlfm.object_centric.sam_segmenter --port ${SAM_PORT}" C-m
 tmux send-keys -t ${session_name}:0.3 "export CUDA_VISIBLE_DEVICES=3 && conda activate vlfm_v2 && cd ${VLFM_ROOT} && ${VLFM_PYTHON} -m vlfm.vlm.yolov7 --port ${YOLOV7_PORT}" C-m
 
-echo "Created tmux session '${session_name}' for Ablation 4 on GPU 3 (Ports 1518X)."
+echo "Created tmux session '${session_name}' for Config 4 on GPU 3 (Ports 1518X)."

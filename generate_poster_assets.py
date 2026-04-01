@@ -188,7 +188,7 @@ def generate_assets(image_path: str):
         plt.imsave("poster_assets/3d_global_scene.png", global_resized)
         print("Saved 3d_global_scene.png")
         
-    print(f"\nExtracting single 'crop_masked_bbox' for all other {len(detections.boxes)-1} objects...")
+    print(f"\nExtracting all crop variations for all other {len(detections.boxes)-1} objects...")
     for idx, box in enumerate(detections.boxes):
         if idx == target_idx:
             continue
@@ -205,14 +205,25 @@ def generate_assets(image_path: str):
         xywh_bbox = (x1, y1, w, h)
         label = detections.phrases[idx].replace(" ", "_").replace("/", "_")
         
-        # We use a transparent PNG generator for visual diagram aesthetics
         mask = all_masks[idx] if len(all_masks) > idx else np.ones(image_rgb.shape[:2], dtype=bool)
-        obj_crop = _create_transparent_crop(image_rgb, mask, xywh_bbox)
         
-        if obj_crop.size > 0:
-            obj_crop_resize = cv2.resize(obj_crop, (512, 512))
-            plt.imsave(f"poster_assets/obj_{idx}_{label}_transparent.png", obj_crop_resize)
-            print(f"Saved transparent diagram crop for: {label}")
+        obj_crop_bbox = _create_bbox_crop(image_rgb, xywh_bbox, bbox_margin=50)
+        obj_crop_masked = _create_masked_crop(image_rgb, mask, xywh_bbox)
+        obj_crop_transparent = _create_transparent_crop(image_rgb, mask, xywh_bbox)
+        
+        if obj_crop_bbox.size > 0:
+            obj_crop_bbox_resize = cv2.resize(obj_crop_bbox, (512, 512))
+            plt.imsave(f"poster_assets/obj_{idx}_{label}_crop_bbox.png", obj_crop_bbox_resize)
+            
+        if obj_crop_masked.size > 0:
+            obj_crop_masked_resize = cv2.resize(obj_crop_masked, (512, 512))
+            plt.imsave(f"poster_assets/obj_{idx}_{label}_crop_masked_bbox.png", obj_crop_masked_resize)
+            
+        if obj_crop_transparent.size > 0:
+            obj_crop_transparent_resize = cv2.resize(obj_crop_transparent, (512, 512))
+            plt.imsave(f"poster_assets/obj_{idx}_{label}_transparent.png", obj_crop_transparent_resize)
+            
+        print(f"Saved all 3 crop variants for secondary object: {label}")
 
     print("\nSuccess! All assets generated in the /poster_assets folder.")
 
