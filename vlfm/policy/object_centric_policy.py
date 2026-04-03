@@ -180,8 +180,8 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
                 for (rgb, depth, tf, min_depth, max_depth, fx, fy) in object_map_rgbd
             ]
 
-            # Update Maps (Semantic & Value) — detections run internally on value_map_rgbd
-            self._update_value_map()
+            # Update Maps (Semantic & Value) — pass detections[0] to avoid redundant YOLO call
+            self._update_value_map(detections[0])
 
             robot_xy = self._observations_cache["robot_xy"]
             goal = self._get_target_object_location(robot_xy)
@@ -229,17 +229,13 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             if has_coco
             else self._object_detector.predict(img, caption=self._non_coco_caption)
         )
-        # Return all the object detections for object-centric policy
-        # detections.filter_by_class(target_classes)
-        # det_conf_threshold = self._coco_threshold if has_coco else self._non_coco_threshold
-        # detections.filter_by_conf(det_conf_threshold)
+        
+        # Search Sensitivity: Hardcoded to 0.4 to ensure high-recall exploration
         detections.filter_by_conf(0.4)
     
         if has_coco and has_non_coco and detections.num_detections == 0:
             # Retry with non-coco object detector
             detections = self._object_detector.predict(img, caption=self._non_coco_caption)
-            # Return all the object detections for object-centric policy
-            # detections.filter_by_class(target_classes)
             detections.filter_by_conf(self._non_coco_threshold)
 
         # Filter background classes — adapted from ConceptGraphs (streamlined_detections.py):
@@ -307,15 +303,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
             x1, y1, x2, y2 = bbox_denorm.astype(int)
 
-            if self._use_vqa:
-                if self.target_text_features is not None:
-                    crop = rgb[y1:y2, x1:x2]
-                    crop_features = self.encoder.encode_image(crop).squeeze(0)
-                    verify_score = self.cos(crop_features, self.target_text_features).item()
-                    print(f"[Verify] '{detections.phrases[idx]}' CLIP score={verify_score:.3f}")
-                    if verify_score < 0.30:
-                        continue
-
             object_mask, _ = self.mobile_sam_client.segment_bbox(rgb, bbox_denorm.tolist())
 
             self._object_masks[object_mask > 0] = 1
@@ -335,7 +322,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
 
         return detections
 
-    def _update_value_map(self) -> None:
+    def _update_value_map(self, detections: ObjectDetections) -> None:
         """
         Update value map with object-centric scores.
 
@@ -347,8 +334,8 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         # Step 1: Get observations
         rgb, depth, camera_pose, min_depth, max_depth, fov = self._observations_cache["value_map_rgbd"][0]
 
-        # Step 2: Run detection on value_map_rgbd image (guarantees bbox alignment with rgb)
-        value_map_detections = self._get_object_detections(rgb)
+        # Step 2: Use provided detections
+        value_map_detections = detections
         # if value_map_detections.num_detections > 0:
             # print(f"[Map] Detected {value_map_detections.num_detections} objects in value_map frame")
 

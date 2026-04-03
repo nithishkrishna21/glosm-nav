@@ -129,11 +129,6 @@ class BaseObjectNavPolicy(BasePolicy):
             for (rgb, depth, tf, min_depth, max_depth, fx, fy) in object_map_rgbd
         ]
 
-        # keep track of the last set of detected objects, we will need it in object_centric_policy
-        # we are working with only one camera, so we just extract the first entry of detections
-        # self._current_detections = detections[0]
-        # print(f"DEBUG: Detector found {self._current_detections.num_detections} objects")
-
         robot_xy = self._observations_cache["robot_xy"]
         goal = self._get_target_object_location(robot_xy)
 
@@ -390,7 +385,7 @@ class VLFMConfig:
     geometric_sim_type: str = "iou"
     pointnav_policy_path: str = "data/pointnav_weights.pth"
     depth_image_shape: Tuple[int, int] = (224, 224)
-    pointnav_stop_radius: float = 0.9
+    pointnav_stop_radius: float = 0.75
     use_max_confidence: bool = False
     object_map_erosion_size: int = 5
     exploration_thresh: float = 0.0
@@ -400,7 +395,7 @@ class VLFMConfig:
     hole_area_thresh: int = 100000
     use_vqa: bool = False
     vqa_prompt: str = "Is this "
-    coco_threshold: float = 0.8
+    coco_threshold: float = 0.65
     non_coco_threshold: float = 0.4
     agent_radius: float = 0.18
 
