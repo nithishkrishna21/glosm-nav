@@ -294,7 +294,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
 
         for idx in range(len(detections.logits)):
 
-            # Strict ObjectMap filtering: target class + baseline confidence
             if detections.phrases[idx] != self._target_object:
                 continue
             if detections.logits[idx] < objectmap_conf_threshold:

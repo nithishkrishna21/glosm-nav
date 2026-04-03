@@ -65,7 +65,7 @@ class ObjectPointCloudMap:
         curr_position = tf_camera_to_episodic[:3, 3]
         closest_point = self._get_closest_point(global_cloud, curr_position)
         dist = np.linalg.norm(closest_point[:3] - curr_position)
-        if dist < 0.5:
+        if dist < 1.0:
             # Object is too close to trust as a valid object
             return
 

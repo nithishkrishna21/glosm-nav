@@ -265,6 +265,10 @@ class VLFMTrainer(PPOTrainer):
                     if episode_stats["success"] == 1:
                         num_successes += 1
                     num_total += 1
+                    ep_id = current_episodes_info[i].episode_id
+                    dtg = infos[i].get("distance_to_goal", -1)
+                    suc = infos[i].get("success", 0)
+                    print(f"[EPISODE END] ID={ep_id} | distance_to_goal={dtg:.3f}m | success={suc}")
                     print(f"Success rate: {num_successes / num_total * 100:.2f}% ({num_successes} out of {num_total})")
 
                     from vlfm.utils.episode_stats_logger import (

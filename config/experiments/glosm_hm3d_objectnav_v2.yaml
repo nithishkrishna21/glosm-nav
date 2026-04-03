@@ -24,6 +24,9 @@ habitat:
   task:
     success_reward: 2.5
     slack_reward: -1e-3
+    measurements:
+      success:
+        success_distance: 1.0
     lab_sensors:
       base_explorer:
         turn_angle: 30
@@ -52,6 +55,7 @@ habitat_baselines:
   rl:
     policy:
       name: "ObjectCentricPolicy"
+      pointnav_stop_radius: 0.5
 
     ppo:
       clip_param: 0.2

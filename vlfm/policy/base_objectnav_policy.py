@@ -279,8 +279,11 @@ class BaseObjectNavPolicy(BasePolicy):
         }
         self._policy_info["rho_theta"] = np.array([rho, theta])
         if rho < self._pointnav_stop_radius and stop:
+            print(f"[STOP] rho={rho:.3f}m < stop_radius={self._pointnav_stop_radius:.3f}m")
             self._called_stop = True
             return self._stop_action
+        if rho < 1.0:
+            print(f"[NAV] rho={rho:.3f}m | gap={rho - self._pointnav_stop_radius:.3f}m")
         action = self._pointnav_policy.act(obs_pointnav, masks, deterministic=True)
         return action
 
@@ -395,7 +398,7 @@ class VLFMConfig:
     hole_area_thresh: int = 100000
     use_vqa: bool = False
     vqa_prompt: str = "Is this "
-    coco_threshold: float = 0.65
+    coco_threshold: float = 0.8
     non_coco_threshold: float = 0.4
     agent_radius: float = 0.18
 
