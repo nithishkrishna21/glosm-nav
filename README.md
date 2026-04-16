@@ -9,7 +9,7 @@ GLOSM-Nav is a zero-shot semantic navigation framework designed to overcome the 
 ```bash
 # Clone the Repository & Enter Workspace
 cd /path/to/your/workspace
-git clone <GLOSM_NAV_REPO_URL> glosm-nav
+git clone https://github.com/nithishkrishna21/glosm-nav.git
 cd glosm-nav
 
 conda create -n glosm_nav python=3.9 -y
@@ -85,11 +85,11 @@ Replace the placeholders with your actual Matterport tokens:
 ```bash
 export MATTERPORT_USERNAME="<YOUR_MATTERPORT_USERNAME_HERE>"
 export MATTERPORT_PASSWORD="<YOUR_MATTERPORT_PASSWORD_HERE>"
-export DATA_PATH="</absolute/path/to/your/vlfm/data>"
+export DATA_PATH="</absolute/path/to/your/glosm-nav/data>"
 ```
 
 ### Symlinking Shared Data (Optional)
-If your HM3D dataset meshes are stored on a centralized shared lab drive to save space, you must symlink them into the `vlfm/data` folder so Habitat can dynamically find them:
+If your HM3D dataset meshes are stored on a centralized shared lab drive to save space, you must symlink them into the `glosm-nav/data` folder so Habitat can dynamically find them:
 ```bash
 ln -s /path/to/shared/hm3d/versioned_data $DATA_PATH/versioned_data
 ```
