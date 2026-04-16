@@ -1,137 +1,324 @@
-<p align="center">
-  <img src="docs/teaser_v1.jpg" width="700">
-  <h1 align="center">VLFM: Vision-Language Frontier Maps for Zero-Shot Semantic Navigation</h1>
-  <h3 align="center">
-    <a href="http://naoki.io/">Naoki Yokoyama</a>, <a href="https://faculty.cc.gatech.edu/~sha9/">Sehoon Ha</a>, <a href="https://faculty.cc.gatech.edu/~dbatra/">Dhruv Batra</a>, <a href="https://www.robo.guru/about.html">Jiuguang Wang</a>, <a href="https://bucherb.github.io">Bernadette Bucher</a>
-  </h3>
-  <p align="center">
-    <a href="http://naoki.io/portfolio/vlfm.html">Project Website</a> , <a href="https://arxiv.org/abs/2312.03275">Paper (arXiv)</a>
-  </p>
-  <p align="center">
-    <a href="https://github.com/bdaiinstitute/vlfm">
-      <img src="https://img.shields.io/badge/License-MIT-yellow.svg" />
-    </a>
-    <a href="https://www.python.org/">
-      <img src="https://img.shields.io/badge/built%20with-Python3-red.svg" />
-    </a>
-    <a href="https://github.com/jiuguangw/Agenoria/actions">
-      <img src="https://github.com/bdaiinstitute/vlfm/actions/workflows/test.yml/badge.svg">
-    </a>
-    <a href="https://github.com/psf/black">
-      <img src="https://img.shields.io/badge/code%20style-black-000000.svg">
-    </a>
-    <a href="https://github.com/astral-sh/ruff">
-      <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/charliermarsh/ruff/main/assets/badge/v2.json">
-    </a>
-    <a href="https://github.com/python/mypy">
-      <img src="http://www.mypy-lang.org/static/mypy_badge.svg">
-    </a>
-  </p>
-</p>
+# GLOSM-Nav: Global-to-Local Object-Centric Semantic Mapping
 
 ## :sparkles: Overview
 
-Understanding how humans leverage semantic knowledge to navigate unfamiliar environments and decide where to explore next is pivotal for developing robots capable of human-like search behaviors. We introduce a zero-shot navigation approach, Vision-Language Frontier Maps (VLFM), which is inspired by human reasoning and designed to navigate towards unseen semantic objects in novel environments. VLFM builds occupancy maps from depth observations to identify frontiers, and leverages RGB observations and a pre-trained vision-language model to generate a language-grounded value map. VLFM then uses this map to identify the most promising frontier to explore for finding an instance of a given target object category. We evaluate VLFM in photo-realistic environments from the Gibson, Habitat-Matterport 3D (HM3D), and Matterport 3D (MP3D) datasets within the Habitat simulator. Remarkably, VLFM achieves state-of-the-art results on all three datasets as measured by success weighted by path length (SPL) for the Object Goal Navigation task. Furthermore, we show that VLFM's zero-shot nature enables it to be readily deployed on real-world robots such as the Boston Dynamics Spot mobile manipulation platform. We deploy VLFM on Spot and demonstrate its capability to efficiently navigate to target objects within an office building in the real world, without any prior knowledge of the environment. The accomplishments of VLFM underscore the promising potential of vision-language models in advancing the field of semantic navigation.
+GLOSM-Nav is a zero-shot semantic navigation framework designed to overcome the challenge of "spatial amnesia" found in reactive modular agents. While standard 2D semantic maps often lack long-term geometric consistency, GLOSM-Nav introduces a persistent **Object-Centric 3D Mapping** system that grounds semantic detections in concrete world coordinates. By integrating high-precision local perception with a hierarchical **Global Scene Fallback** mechanism, the agent bridges the gap between frontier-based exploration and persistent object-centric grounding. This architecture enables robust, zero-shot autonomous search in unfamiliar environments, prioritizing long-horizon geometric memory without the need for large-scale offline training.
 
-## :hammer_and_wrench: Installation
 
-### Getting Started
-Create the conda environment:
+## 1. Initial Setup
 ```bash
-conda_env_name=vlfm
-conda create -n $conda_env_name python=3.9 -y
-conda activate $conda_env_name
-pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 -f https://download.pytorch.org/whl/torch_stable.html
-pip install git+https://github.com/IDEA-Research/GroundingDINO.git@eeba084341aaa454ce13cb32fa7fd9282fc73a67 salesforce-lavis==1.0.2
-```
-If you are using habitat and are doing simulation experiments, install this repo into your env with the following:
-```bash
+# Clone the Repository & Enter Workspace
+cd /path/to/your/workspace
+git clone <GLOSM_NAV_REPO_URL> glosm-nav
+cd glosm-nav
+
+conda create -n glosm_nav python=3.9 -y
+conda activate glosm_nav 
+
+# 1. Install CUDA Toolkit
+conda install cudatoolkit=11.8 -c conda-forge
+
+# 2. Install PyTorch stack for CUDA 11.8
+pip install torch==2.2.0 torchvision==0.17.0 --index-url https://download.pytorch.org/whl/cu118
+
+# 3. Install cuDNN
+conda install cudnn=8.3.2 -c conda-forge
+
+# 4. Install Habitat-Sim
+conda install habitat-sim=0.2.4 withbullet headless -c conda-forge -c aihabitat
+
+# 5. Install Habitat-Lab & Core Dependencies
 pip install -e .[habitat]
-```
-If you are using the Spot robot, install this repo into your env with the following:
-```bash
-pip install -e .[reality]
-```
-#### [Whether you're using conda or not]
-Clone the following repo within this one (simply cloning will suffice):
-```bash
-git clone git@github.com:WongKinYiu/yolov7.git
+
+# 6. Install Modern VLM Dependencies (Transformers & Accelerate)
+pip install --upgrade "transformers>=4.47.0"
+pip install accelerate
+
+# 7. Install Pinned Image/Data Dependencies
+pip install numpy==1.26.4 scipy==1.12.0 Pillow==9.5.0 imageio-ffmpeg==0.6.0
+pip install opencv-python==4.5.5.64
+pip install spacy==3.5.0 thinc==8.1.12
+
+# 8. Install GroundingDINO (Pinned Commit)
+pip install git+https://github.com/IDEA-Research/GroundingDINO.git@eeba084341aaa454ce13cb32fa7fd9282fc73a67
+
+# 9. Clone Detector Sub-Repositories (for Config Files & Weights)
+# These should be cloned into the root of the 'glosm-nav' directory
+git clone https://github.com/IDEA-Research/GroundingDINO.git
+git clone https://github.com/WongKinYiu/yolov7.git
+
+# 10. Prepare Model Weights & Downloads
+mkdir -p /workspace/glosm-nav/data
+cd /workspace/glosm-nav/data
+
+# Download MobileSAM Weights
+wget https://github.com/ChaoningZhang/MobileSAM/raw/master/weights/mobile_sam.pt
+
+# Download GroundingDINO Weights
+wget https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
 ```
 
-## :dart: Downloading the HM3D dataset
-
-### Matterport
-First, set the following variables during installation (don't need to put in .bashrc):
+### 11. Hotpatch YOLOv7 Git Tag Issue
+This prevents errors during model initialization by explicitly pointing to the local tag.
 ```bash
-MATTERPORT_TOKEN_ID=<FILL IN FROM YOUR ACCOUNT INFO IN MATTERPORT>
-MATTERPORT_TOKEN_SECRET=<FILL IN FROM YOUR ACCOUNT INFO IN MATTERPORT>
-DATA_DIR=</path/to/vlfm/data>
-
-# Link to the HM3D ObjectNav episodes dataset, listed here:
-# https://github.com/facebookresearch/habitat-lab/blob/main/DATASETS.md#task-datasets
-# From the above page, locate the link to the HM3D ObjectNav dataset.
-# Verify that it is the same as the next two lines.
-HM3D_OBJECTNAV=https://dl.fbaipublicfiles.com/habitat/data/datasets/objectnav/hm3d/v1/objectnav_hm3d_v1.zip
+cd /workspace/glosm-nav/yolov7
+git tag v0.1
 ```
 
-### Clone and install habitat-lab, then download datasets
-*Ensure that the correct conda environment is activated!!*
+**Manual Fix**: In `yolov7/utils/google_utils.py`, change **Line 31**:
+*   **FROM**: `tag = subprocess.check_output('git tag', shell=True).decode().split()[-1]`
+*   **TO**: `tag = subprocess.check_output('cd /workspace/glosm-nav/yolov7 && git tag', shell=True).decode().split()[-1]`
+
+### 12. Optional: Disable Auto-Tmux (For Cluster Environments)
+If your server automatically forces you into a `tmux` session on login, run this to disable that behavior:
 ```bash
-# Download HM3D 3D scans (scenes_dataset)
+touch ~/.no_auto_tmux
+```
+
+---
+
+## 2. Dataset Setup
+You must download the Habitat-Matterport 3D (HM3D) dataset (v0.1 and v0.2). You will need an active Matterport account to obtain the access credentials.
+
+### Environment Setup
+Replace the placeholders with your actual Matterport tokens:
+```bash
+export MATTERPORT_USERNAME="<YOUR_MATTERPORT_USERNAME_HERE>"
+export MATTERPORT_PASSWORD="<YOUR_MATTERPORT_PASSWORD_HERE>"
+export DATA_PATH="</absolute/path/to/your/vlfm/data>"
+```
+
+### Symlinking Shared Data (Optional)
+If your HM3D dataset meshes are stored on a centralized shared lab drive to save space, you must symlink them into the `vlfm/data` folder so Habitat can dynamically find them:
+```bash
+ln -s /path/to/shared/hm3d/versioned_data $DATA_PATH/versioned_data
+```
+
+### Download commands
+Run the following scripts via the Habitat dataset downloader:
+
+**Download HM3D v0.1 (For Ablations):**
+```bash
 python -m habitat_sim.utils.datasets_download \
-  --username $MATTERPORT_TOKEN_ID --password $MATTERPORT_TOKEN_SECRET \
-  --uids hm3d_train_v0.2 \
-  --data-path $DATA_DIR &&
+  --username $MATTERPORT_USERNAME \
+  --password $MATTERPORT_PASSWORD \
+  --uids hm3d_val_v0.1 \
+  --data-path $DATA_PATH
+```
+
+**Download HM3D v0.2 (For SOTA Benchmark):**
+```bash
 python -m habitat_sim.utils.datasets_download \
-  --username $MATTERPORT_TOKEN_ID --password $MATTERPORT_TOKEN_SECRET \
+  --username $MATTERPORT_USERNAME \
+  --password $MATTERPORT_PASSWORD \
   --uids hm3d_val_v0.2 \
-  --data-path $DATA_DIR &&
+  --data-path $DATA_PATH
+```
 
-# Download HM3D ObjectNav dataset episodes
-wget $HM3D_OBJECTNAV &&
-unzip objectnav_hm3d_v1.zip &&
-mkdir -p $DATA_DIR/datasets/objectnav/hm3d  &&
-mv objectnav_hm3d_v1 $DATA_DIR/datasets/objectnav/hm3d/v1 &&
+**Download MP3D (For Zero-Shot Generalization):**
+*Note: Due to Matterport licensing, this uses a modernized open-source Python 3 downloader rather than the legacy Python 2.7 script.*
+```bash
+cd $DATA_PATH
+
+wget https://raw.githubusercontent.com/wtzmx/Matterport3D-Dataset-Downloader/main/download_mp.py
+wget https://raw.githubusercontent.com/wtzmx/Matterport3D-Dataset-Downloader/main/matterport3d_scan_ids.txt
+
+# Download ONLY the Habitat meshes (and tiny intrinsics files to bypass the massive raw image dumps)
+python download_mp.py -o ./scene_datasets/mp3d \
+  --scans matterport3d_scan_ids.txt \
+  --task_data habitat \
+  --type matterport_camera_intrinsics
+
+# Scoop the actual scene folders up to the root mp3d directory structure
+mv ./scene_datasets/mp3d/v1/mp3d/* ./scene_datasets/mp3d/
+
+# Delete the leftover 'v1' directory containing the scans/intrinsics junk
+rm -rf ./scene_datasets/mp3d/v1
+rm download_mp.py matterport3d_scan_ids.txt
+```
+
+### Download ObjectNav Task Episodes
+After downloading the 3D scene meshes, you must pull down the JSON files that define the actual ObjectNav goals and start positions.
+
+**ObjectNav v1 Episodes (For Ablations):**
+```bash
+cd $DATA_PATH
+wget https://dl.fbaipublicfiles.com/habitat/data/datasets/objectnav/hm3d/v1/objectnav_hm3d_v1.zip
+unzip objectnav_hm3d_v1.zip
+mkdir -p datasets/objectnav/hm3d
+mv objectnav_hm3d_v1 datasets/objectnav/hm3d/v1
 rm objectnav_hm3d_v1.zip
 ```
 
-## :weight_lifting: Downloading weights for various models
-The weights for MobileSAM, GroundingDINO, and PointNav must be saved to the `data/` directory. The weights can be downloaded from the following links:
-- `mobile_sam.pt`:  https://github.com/ChaoningZhang/MobileSAM
-- `groundingdino_swint_ogc.pth`: https://github.com/IDEA-Research/GroundingDINO
-- `yolov7-e6e.pt`: https://github.com/WongKinYiu/yolov7
-- `pointnav_weights.pth`: included inside the [data](data) subdirectory
-
-## :arrow_forward: Evaluation within Habitat
-To run evaluation, various models must be loaded in the background first. This only needs to be done once by running the following command:
+**ObjectNav v2 Episodes (For SOTA Benchmark):**
 ```bash
-./scripts/launch_vlm_servers.sh
+cd $DATA_PATH
+wget https://dl.fbaipublicfiles.com/habitat/data/datasets/objectnav/hm3d/v2/objectnav_hm3d_v2.zip
+unzip objectnav_hm3d_v2.zip
+mkdir -p datasets/objectnav/hm3d
+mv objectnav_hm3d_v2 datasets/objectnav/hm3d/v2
+rm objectnav_hm3d_v2.zip
 ```
-(You may need to run `chmod +x` on this file first.)
-This command will create a tmux session that will start loading the various models used for VLFM and serving them through `flask`. When you are done, be sure to kill the tmux session to free up your GPU.
 
-Run the following to evaluate on the HM3D dataset:
+**ObjectNav MP3D v1 Episodes (For MP3D Zero-Shot Generalization):**
 ```bash
-python -m vlfm.run
+cd $DATA_PATH
+wget https://dl.fbaipublicfiles.com/habitat/data/datasets/objectnav/m3d/v1/objectnav_mp3d_v1.zip
+unzip objectnav_mp3d_v1.zip
+mkdir -p datasets/objectnav/mp3d/v1
+mv train val val_mini datasets/objectnav/mp3d/v1/
+rm objectnav_mp3d_v1.zip
 ```
-To evaluate on MP3D, run the following:
+
+---
+
+## 3. Parallel Ablation Studies (4 GPU Setup)
+To test the different variations of GLOSM-Nav simultaneously, you can launch four `tmux` sessions to run parallel jobs on distinct GPUs with isolated network ports.
+
+> **Note:** Ensure your conda environment (e.g. `glosm_nav`) is activated in each session window.
+
+### Config 1: OpenCLIP + IoU
 ```bash
-python -m vlfm.run habitat.dataset.data_path=data/datasets/objectnav/mp3d/val/val.json.gz
+tmux new -s hm3d_objectnav_v1_config1
+conda activate glosm_nav
+export CUDA_VISIBLE_DEVICES=0
+export SAM_PORT=12183
+export YOLOV7_PORT=12184
+export GROUNDING_DINO_PORT=12181
+export CLIP_PORT=12186
+
+python -um vlfm.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="iou" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config1" 2>&1 | tee logs/hm3d_objectnav_v1_config1.log
 ```
 
-## :newspaper: License
+### Config 2: OpenCLIP + Overlap (NN-Ratio)
+```bash
+tmux new -s hm3d_objectnav_v1_config2
+conda activate glosm_nav
+export CUDA_VISIBLE_DEVICES=1
+export SAM_PORT=13183
+export YOLOV7_PORT=13184
+export GROUNDING_DINO_PORT=13181
+export CLIP_PORT=13186
 
-VLFM is released under the [MIT License](LICENSE). This code was produced as part of Naoki Yokoyama's internship at the Boston Dynamics AI Institute in Summer 2023 and is provided "as is" without active maintenance. For questions, please contact [Naoki Yokoyama](http://naoki.io) or [Jiuguang Wang](https://www.robo.guru).
-
-## :black_nib: Citation
-
-If you use VLFM in your research, please use the following BibTeX entry.
-
+python -um vlfm.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="overlap" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config2" 2>&1 | tee logs/hm3d_objectnav_v1_config2.log
 ```
-@inproceedings{yokoyama2024vlfm,
-  title={VLFM: Vision-Language Frontier Maps for Zero-Shot Semantic Navigation},
-  author={Naoki Yokoyama and Sehoon Ha and Dhruv Batra and Jiuguang Wang and Bernadette Bucher},
-  booktitle={International Conference on Robotics and Automation (ICRA)},
-  year={2024}
-}
+
+### Config 3: MetaCLIP + IoU
+```bash
+tmux new -s hm3d_objectnav_v1_config3
+conda activate glosm_nav
+export CUDA_VISIBLE_DEVICES=2
+export SAM_PORT=14183
+export YOLOV7_PORT=14184
+export GROUNDING_DINO_PORT=14181
+export CLIP_PORT=14186
+
+python -um vlfm.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="iou" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config3" 2>&1 | tee logs/hm3d_objectnav_v1_config3.log
+```
+
+### Config 4: MetaCLIP + Overlap (NN-Ratio)
+```bash
+tmux new -s hm3d_objectnav_v1_config4
+conda activate glosm_nav
+export CUDA_VISIBLE_DEVICES=3
+export SAM_PORT=15183
+export YOLOV7_PORT=15184
+export GROUNDING_DINO_PORT=15181
+export CLIP_PORT=15186
+
+python -um vlfm.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="overlap" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config4" 2>&1 | tee logs/hm3d_objectnav_v1_config4.log
+```
+
+---
+
+## 4. Automated Complete Evaluation (Grand Tour)
+For the final baseline or benchmark evaluation over the full dataset (e.g. `v0.2`), launch the multi-process infrastructure to host the vision-language backbone models, then sequentially run the evaluation policy.
+
+### Run 1: OpenCLIP (Config 1 Best)
+```bash
+tmux new -s hm3d_objectnav_v2_config1
+conda activate glosm_nav
+export CUDA_VISIBLE_DEVICES=0
+export SAM_PORT=12183
+export YOLOV7_PORT=12184
+export GROUNDING_DINO_PORT=12181
+export CLIP_PORT=12186
+
+python -um vlfm.run --config-name=experiments/glosm_hm3d_objectnav_v2 \
+  habitat_baselines.rl.policy.geometric_sim_type="iou" \
+  habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v2_config1" \
+  2>&1 | tee logs/hm3d_objectnav_v2_config1.log
+```
+
+### Run 2: MetaCLIP (Config 3 Best)
+```bash
+tmux new -s hm3d_objectnav_v2_config3
+conda activate glosm_nav
+export CUDA_VISIBLE_DEVICES=1
+export SAM_PORT=14183
+export YOLOV7_PORT=14184
+export GROUNDING_DINO_PORT=14181
+export CLIP_PORT=14186
+
+python -um vlfm.run --config-name=experiments/glosm_hm3d_objectnav_v2 \
+  habitat_baselines.rl.policy.geometric_sim_type="iou" \
+  habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v2_config3" \
+  2>&1 | tee logs/hm3d_objectnav_v2_config3.log
+```
+
+---
+
+## 5. MP3D Zero-Shot Evaluation
+To evaluate your pipeline's generalization capabilities on the Matterport3D dataset, use the dedicated MP3D config. We will launch the two best variants in parallel against this new dataset.
+
+### Run 1: OpenCLIP (Config 1 Best)
+```bash
+tmux new -s mp3d_objectnav_config1
+conda activate glosm_nav
+export CUDA_VISIBLE_DEVICES=0
+export SAM_PORT=12183
+export YOLOV7_PORT=12184
+export GROUNDING_DINO_PORT=12181
+export CLIP_PORT=12186
+
+python -um vlfm.run --config-name=experiments/glosm_mp3d_objectnav \
+  habitat_baselines.rl.policy.geometric_sim_type="iou" \
+  habitat_baselines.tensorboard_dir="tb/mp3d_objectnav_config1" \
+  2>&1 | tee logs/mp3d_objectnav_config1.log
+```
+
+### Run 2: MetaCLIP (Config 3 Best)
+```bash
+tmux new -s mp3d_objectnav_config3
+conda activate glosm_nav
+export CUDA_VISIBLE_DEVICES=1
+export SAM_PORT=14183
+export YOLOV7_PORT=14184
+export GROUNDING_DINO_PORT=14181
+export CLIP_PORT=14186
+
+python -um vlfm.run --config-name=experiments/glosm_mp3d_objectnav \
+  habitat_baselines.rl.policy.geometric_sim_type="iou" \
+  habitat_baselines.tensorboard_dir="tb/mp3d_objectnav_config3" \
+  2>&1 | tee logs/mp3d_objectnav_config3.log
+```
+
+---
+
+## 6. Monitoring Progress
+To check back in on your logging later, view your active sessions and reattach to the correct one:
+```bash
+tmux ls
+
+# If monitoring HM3D OpenCLIP (Config 1):
+tmux attach-session -t hm3d_objectnav_v2_config1
+
+# If monitoring HM3D MetaCLIP (Config 3):
+tmux attach-session -t hm3d_objectnav_v2_config3
+
+# If monitoring MP3D OpenCLIP (Config 1):
+tmux attach-session -t mp3d_objectnav_config1
+
+# If monitoring MP3D MetaCLIP (Config 3):
+tmux attach-session -t mp3d_objectnav_config3
 ```
