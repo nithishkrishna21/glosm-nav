@@ -23,6 +23,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+from depth_camera_filtering import filter_depth
 from habitat.tasks.nav.object_nav_task import ObjectGoalSensor
 from vlfm.policy.itm_policy import BaseITMPolicy, ITMPolicyV2
 from vlfm.policy.habitat_policies import (
@@ -36,7 +37,7 @@ from vlfm.mapping.object_point_cloud_map import ObjectPointCloudMap
 from vlfm.mapping.obstacle_map import ObstacleMap
 from vlfm.obs_transformers.utils import image_resize
 from vlfm.policy.utils.pointnav_policy import WrappedPointNavResNetPolicy
-from vlfm.utils.geometry_utils import get_fov, rho_theta
+from vlfm.utils.geometry_utils import get_fov, rho_theta, xyz_yaw_to_tf_matrix
 
 # Our object-centric modules (Stage 1 & 2)
 from vlfm.object_centric.object_segmentation import ObjectSegmenter
@@ -45,8 +46,10 @@ from vlfm.object_centric.sam_segmenter import MobileSAMClient
 from vlfm.object_centric.clip_encoder import CLIPClient
 from vlfm.vlm.coco_classes import COCO_CLASSES
 from vlfm.vlm.grounding_dino import GroundingDINOClient, ObjectDetections
+from habitat_baselines.common.tensor_dict import TensorDict
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat_baselines.rl.ppo.policy import PolicyActionData
+from .base_objectnav_policy import BaseObjectNavPolicy
 
 DEBUG = True
 
@@ -84,7 +87,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             sam_segmenter=self.mobile_sam_client,
             encoder=self.encoder,
             camera_intrinsics=camera_intrinsics,
-            min_points=16,  # Match ConceptGraphs min_points_threshold
+            min_points=16,
         )
 
         self.semantic_map = SemanticMap(
@@ -92,8 +95,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             geometric_sim_type=geometric_sim_type
         )
 
-        # Store the text prompt template (e.g., "Seems like there is a target_object ahead.")
-        # The actual target will be set in _pre_step() when we know the objectgoal
         self._text_prompt = text_prompt
         self.target_text_features = None  # Will be set after we know the target object
         
@@ -139,7 +140,51 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
     def _get_policy_info(self, detections) -> Dict[str, Any]:
         return super()._get_policy_info(detections)
 
-    # _cache_observations the super method is used
+    def _cache_observations(self: Union["HabitatMixin", BaseObjectNavPolicy], observations: TensorDict) -> None:
+        """Caches the rgb, depth, and camera transform from the observations.
+
+        Args:
+           observations (TensorDict): The observations from the current timestep.
+        """
+        if len(self._observations_cache) > 0:
+            return
+        rgb = observations["rgb"][0].cpu().numpy()
+        depth = observations["depth"][0].cpu().numpy()
+        x, y = observations["gps"][0].cpu().numpy()
+        camera_yaw = observations["compass"][0].cpu().item()
+        depth = filter_depth(depth.reshape(depth.shape[:2]), blur_type=None)
+        # Habitat GPS makes west negative, so flip y
+        camera_position = np.array([x, -y, self._camera_height])
+        robot_xy = camera_position[:2]
+        tf_camera_to_episodic = xyz_yaw_to_tf_matrix(camera_position, camera_yaw)
+
+        self._observations_cache = {
+            "nav_depth": observations["depth"],  # for pointnav
+            "robot_xy": robot_xy,
+            "robot_heading": camera_yaw,
+            "object_map_rgbd": [
+                (
+                    rgb,
+                    depth,
+                    tf_camera_to_episodic,
+                    self._min_depth,
+                    self._max_depth,
+                    self._fx,
+                    self._fy,
+                )
+            ],
+            "value_map_rgbd": [
+                (
+                    rgb,
+                    depth,
+                    tf_camera_to_episodic,
+                    self._min_depth,
+                    self._max_depth,
+                    self._camera_fov,
+                )
+            ],
+            "habitat_start_yaw": observations["heading"][0].item(),
+        }
 
     def act(
         self,
@@ -175,13 +220,43 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             self._pre_step(observations, masks)
 
             object_map_rgbd = self._observations_cache["object_map_rgbd"]
-            detections = [
-                self._update_object_map(rgb, depth, tf, min_depth, max_depth, fx, fy)
-                for (rgb, depth, tf, min_depth, max_depth, fx, fy) in object_map_rgbd
-            ]
 
-            # Update Maps (Semantic & Value) — pass detections[0] to avoid redundant YOLO call
-            self._update_value_map(detections[0])
+            detections = None
+            for (rgb, depth, tf_camera_to_episodic, min_depth, max_depth, fx, fy) in object_map_rgbd:
+
+                d = self._update_object_map(rgb, depth, tf_camera_to_episodic, min_depth, max_depth, fx, fy)
+                if detections is None:
+                    detections = d
+                else:
+                    detections.extend(d)
+
+                if self._compute_frontiers:
+                    self._obstacle_map.update_map(
+                        depth,
+                        tf_camera_to_episodic,
+                        min_depth,
+                        max_depth,
+                        fx,
+                        fy,
+                        self._camera_fov,
+                        stair_mask=self._stair_mask
+                    )
+
+            if self._compute_frontiers:
+                frontiers = self._obstacle_map.frontiers
+                self._obstacle_map.update_agent_traj(
+                    self._observations_cache["robot_xy"],
+                    self._observations_cache["robot_heading"]
+                )
+            else:
+                if "frontier_sensor" in observations:
+                    frontiers = observations["frontier_sensor"][0].cpu().numpy()
+                else:
+                    frontiers = np.array([])
+
+            self._observations_cache["frontier_sensor"] = frontiers
+            
+            self._update_value_map(detections)
 
             robot_xy = self._observations_cache["robot_xy"]
             goal = self._get_target_object_location(robot_xy)
@@ -201,7 +276,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
                 action_numpy = action_numpy[0]
             print(f"Step: {self._num_steps} | Mode: {mode} | Action: {action_numpy}")
             print(f"==================================================")
-            self._policy_info.update(self._get_policy_info(detections[0]))
+            self._policy_info.update(self._get_policy_info(detections))
             self._num_steps += 1
 
             self._observations_cache = {}
@@ -229,16 +304,26 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             if has_coco
             else self._object_detector.predict(img, caption=self._non_coco_caption)
         )
+
+        # Auxiliary Detection: Always check for stairs using Grounding DINO
+        stair_detections = self._object_detector.predict(img, caption="stairs")
+        stair_detections.filter_by_class(["stairs"])
+        detections.extend(stair_detections)
         
         # Search Sensitivity: Hardcoded to 0.4 to ensure high-recall exploration
         detections.filter_by_conf(0.4)
     
-        if has_coco and has_non_coco and detections.num_detections == 0:
+        # Check if the target was found (ignoring the stairs we just added)
+        target_found = any(p in target_classes for p in detections.phrases)
+
+        if has_coco and has_non_coco and not target_found:
             # Retry with non-coco object detector
             detections = self._object_detector.predict(img, caption=self._non_coco_caption)
+            detections.extend(stair_detections)
             detections.filter_by_conf(self._non_coco_threshold)
 
-        # Filter background classes — adapted from ConceptGraphs (streamlined_detections.py):
+
+        # Filter background classes
         bg_classes = ["wall", "floor", "ceiling", "door", "window"]
         keep = torch.tensor(
             [p not in bg_classes for p in detections.phrases], dtype=torch.bool
@@ -280,6 +365,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         detections = self._get_object_detections(rgb)
         height, width = rgb.shape[:2]
         self._object_masks = np.zeros((height, width), dtype=np.uint8)
+        self._stair_mask = np.zeros((height, width), dtype=np.uint8)
         if np.array_equal(depth, np.ones_like(depth)) and detections.num_detections > 0:
             depth = self._infer_depth(rgb, min_depth, max_depth)
             obs = list(self._observations_cache["object_map_rgbd"][0])
@@ -294,27 +380,34 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
 
         for idx in range(len(detections.logits)):
 
-            if detections.phrases[idx] != self._target_object:
-                continue
-            if detections.logits[idx] < objectmap_conf_threshold:
-                continue
+            # stairs detected 
+            if detections.phrases[idx] == "stairs" and detections.logits[idx] >= 0.4:
+                bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
+                x1, y1, x2, y2 = bbox_denorm.astype(int)
+                stair_mask, _ = self.mobile_sam_client.segment_bbox(rgb, bbox_denorm.tolist())
+                self._stair_mask[stair_mask > 0] = 1
+                continue 
+
+            else:               
+                if detections.phrases[idx] not in target_classes or detections.logits[idx] < objectmap_conf_threshold:
+                    continue
         
-            bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
-            x1, y1, x2, y2 = bbox_denorm.astype(int)
+                bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
+                x1, y1, x2, y2 = bbox_denorm.astype(int)
 
-            object_mask, _ = self.mobile_sam_client.segment_bbox(rgb, bbox_denorm.tolist())
+                object_mask, _ = self.mobile_sam_client.segment_bbox(rgb, bbox_denorm.tolist())
 
-            self._object_masks[object_mask > 0] = 1
-            self._object_map.update_map(
-                self._target_object,
-                depth,
-                object_mask,
-                tf_camera_to_episodic,
-                min_depth,
-                max_depth,
-                fx,
-                fy,
-            )
+                self._object_masks[object_mask > 0] = 1
+                self._object_map.update_map(
+                    self._target_object,
+                    depth,
+                    object_mask,
+                    tf_camera_to_episodic,
+                    min_depth,
+                    max_depth,
+                    fx,
+                    fy,
+                )
 
         cone_fov = get_fov(fx, depth.shape[1])
         self._object_map.update_explored(tf_camera_to_episodic, max_depth, cone_fov)
@@ -339,8 +432,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             # print(f"[Map] Detected {value_map_detections.num_detections} objects in value_map frame")
 
         # Step 3: Segment objects in current frame using aligned detections
-        # segmentations = self.object_segmenter.segment_objects(rgb, depth,
-        #                                                 camera_pose, value_map_detections)
         globalFallback, segmentations, global_features = self.object_segmenter.segment_objects(rgb, depth,
                                                                                         camera_pose, value_map_detections)
         # print(f"[Map] Segmented {len(segmentations)} objects in this frame")

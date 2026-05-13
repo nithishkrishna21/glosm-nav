@@ -61,6 +61,16 @@ class ObjectDetections:
             return "No detections"
         return "\n".join(dets)
 
+    def extend(self, other: "ObjectDetections") -> None:
+        """Adds detections from another ObjectDetections instance."""
+        if other.num_detections == 0:
+            return
+        self.boxes = torch.cat([self.boxes, other.boxes.to(self.boxes.device)])
+        self.logits = torch.cat([self.logits, other.logits.to(self.logits.device)])
+        self.phrases.extend(other.phrases)
+        self._annotated_frame = None
+
+
     def filter_by_conf(self, conf_thresh: float) -> None:
         """Filters detections by confidence threshold in-place.
 

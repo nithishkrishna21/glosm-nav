@@ -50,7 +50,7 @@ class SigLIP:
         with torch.inference_mode():
             image_features = self.model.get_image_features(**inputs)
             image_features = normalize(image_features, p = 2.0, dim = -1)
-            image_features = np.float32(image_features.cpu())
+            image_features = image_features.cpu().numpy().astype(np.float32)
 
         return image_features
 
@@ -71,7 +71,7 @@ class SigLIP:
         with torch.inference_mode():
             text_features = self.model.get_text_features(**inputs)
             text_features = normalize(text_features, p = 2.0, dim = -1)
-            text_features = np.float32(text_features.cpu())
+            text_features = text_features.cpu().numpy().astype(np.float32)
         
         return text_features
 
@@ -100,7 +100,7 @@ class SigLIP:
         
 
 class SigLIPClient:
-    def __init__(self, port: int = None, device = None):
+    def __init__(self, port: Optional[int] = None, device = None):
         if port is None:
             port = int(os.environ.get("SIGLIP2_PORT", "12185"))
         self.url = f"http://localhost:{port}/siglip"

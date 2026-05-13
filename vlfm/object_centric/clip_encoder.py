@@ -5,10 +5,7 @@ import numpy as np
 import torch
 from torch.nn.functional import normalize
 from PIL import Image
-try:
-    import open_clip
-except ImportError:
-    open_clip = None
+import open_clip
 
 from .server_wrapper import (
     ServerMixin,
@@ -86,7 +83,7 @@ class CLIP:
         with torch.no_grad():
             image_features = self.model.encode_image(image_batch)
             image_features = normalize(image_features, p=2, dim=-1)
-            image_features = np.float32(image_features.cpu())
+            image_features = image_features.cpu().numpy().astype(np.float32)
 
         return image_features
 
@@ -105,7 +102,7 @@ class CLIP:
             text = self.tokenizer([text]).to(self.device)
             text_features = self.model.encode_text(text)
             text_features = normalize(text_features, p=2, dim=-1)
-            text_features = np.float32(text_features.cpu())
+            text_features = text_features.cpu().numpy().astype(np.float32)
 
         return text_features
 
@@ -133,7 +130,7 @@ class CLIP:
 
 
 class CLIPClient:
-    def __init__(self, port: int = None, device = None):
+    def __init__(self, port: Optional[int] = None, device = None):
         if port is None:
             port = int(os.environ.get("CLIP_PORT", "12186"))
         self.url = f"http://localhost:{port}/clip"

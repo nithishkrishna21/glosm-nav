@@ -14,13 +14,14 @@ This file depends on:
 import cv2
 import numpy as np
 import torch
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 import open3d as o3d
 
 # Custom Wrappers (Client classes for HTTP communication with model servers)
 from .sam_segmenter import MobileSAMClient
 from .siglip2 import SigLIPClient
 from .clip_encoder import CLIPClient
+from vlfm.vlm.detections import ObjectDetections
 
 DEBUG = True
 
@@ -69,7 +70,7 @@ class ObjectSegmenter:
     def __init__(
         self,
         sam_segmenter: MobileSAMClient,  # MobileSAMClient instance (HTTP client)
-        encoder: None,                   # Encoder model client instance (HTTP Client)
+        encoder: Any,                   # Encoder model client instance (HTTP Client)
         camera_intrinsics: np.ndarray,  # 3×3 intrinsics matrix K
         min_points: int = 50,           # Minimum 3D points for valid object
         bbox_margin: int = 50,         # Margin to increase bounding box by
@@ -87,7 +88,7 @@ class ObjectSegmenter:
         """
         self.sam_segmenter = sam_segmenter
         if encoder is None:
-            self.encoder = CLIPClient
+            self.encoder = CLIPClient()
         else:
             self.encoder = encoder
         self.camera_intrinsics = camera_intrinsics
@@ -102,7 +103,7 @@ class ObjectSegmenter:
         rgb: np.ndarray,           # (H, W, 3) RGB image
         depth: np.ndarray,         # (H, W) depth image
         camera_pose: np.ndarray,   # (4, 4) camera-to-world transform
-        detections: List[Dict]     # Objects detected by GroundingDINO
+        detections: ObjectDetections     # Objects detected by detector
     ) -> Tuple[bool, List[Segmentation], torch.Tensor]:
         """
         Segment objects in a single frame and extract their features + point clouds.
@@ -128,17 +129,9 @@ class ObjectSegmenter:
             globalFallback = True
         
         else:
-            # if DEBUG:
-            #     print("Running SAM with BBoxes")
             masks = self._segment_image_with_bboxes(rgb, detections)
             # if DEBUG:
             #     print(f"DEBUG: Raw masks from SAM: {len(masks)}")
-
-        # # Discard low-confidence masks 
-        # masks = [m for m in masks if m['predicted_iou'] > 0.70
-        #          and m['stability_score'] > 0.75
-        #          and m['area'] < (0.5 * rgb.shape[0] * rgb.shape[1])]
-        # print(f"DEBUG SAM: After filtering (iou>0.7, stability>0.75): {len(masks)} masks")
 
 
         # ══════════════════════════════════════════════════════════════
@@ -256,7 +249,7 @@ class ObjectSegmenter:
         return masks
 
     # MobileSAM - Predict
-    def _segment_image_with_bboxes(self, rgb: np.ndarray, detections: List[Dict]) -> List[Dict]:
+    def _segment_image_with_bboxes(self, rgb: np.ndarray, detections: ObjectDetections) -> List[Dict]:
         """
         Run SAM segmentation on RGB image with the help of bboxes
 
@@ -280,7 +273,7 @@ class ObjectSegmenter:
         return masks
 
 
-    def _extract_global_features(self, rgb: np.ndarray) -> np.ndarray:
+    def _extract_global_features(self, rgb: np.ndarray) -> torch.Tensor:
         """
         Extract features from full RGB image using encoder.
 
@@ -346,7 +339,7 @@ class ObjectSegmenter:
 
 
 
-    def _extract_features(self, crop: np.ndarray) -> np.ndarray:
+    def _extract_features(self, crop: np.ndarray) -> torch.Tensor:
         """
         Extract features from a crop using encoder.
 
