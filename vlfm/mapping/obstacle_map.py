@@ -109,6 +109,7 @@ class ObstacleMap(BaseMap):
                 # 4. Apply Differentiated Height Filters
                 # Stairs: Thin slice (0.63 - 0.88) to keep them traversable
                 stair_obs = filter_points_by_height(stair_pc_ep, 0.63, 0.88)
+                stair_clearing = filter_points_by_height(stair_pc_ep, 0.0, 0.63)
                 # Normal: Standard range (0.15 - 0.88)
                 normal_obs = filter_points_by_height(normal_pc_ep, self._min_height, self._max_height)
                 
@@ -124,6 +125,12 @@ class ObstacleMap(BaseMap):
             xy_points = obstacle_cloud[:, :2]
             pixel_points = self._xy_to_px(xy_points)
             self._map[pixel_points[:, 1], pixel_points[:, 0]] = 1
+
+            # Active clearing/hole punching for stairs:
+            if stair_mask is not None and len(stair_clearing) > 0:
+                clearing_xy = stair_clearing[:, :2]
+                clearing_pixels = self._xy_to_px(clearing_xy)
+                self._map[clearing_pixels[:, 1], clearing_pixels[:, 0]] = 0
 
             # Update the navigable area, which is an inverse of the obstacle map after a
             # dilation operation to accommodate the robot's radius.

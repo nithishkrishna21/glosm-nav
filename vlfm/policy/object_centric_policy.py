@@ -38,8 +38,6 @@ from vlfm.mapping.obstacle_map import ObstacleMap
 from vlfm.obs_transformers.utils import image_resize
 from vlfm.policy.utils.pointnav_policy import WrappedPointNavResNetPolicy
 from vlfm.utils.geometry_utils import get_fov, rho_theta, xyz_yaw_to_tf_matrix
-
-# Our object-centric modules (Stage 1 & 2)
 from vlfm.object_centric.object_segmentation import ObjectSegmenter
 from vlfm.object_centric.semantic_map import SemanticMap, SemanticMapObject
 from vlfm.object_centric.sam_segmenter import MobileSAMClient
@@ -75,6 +73,16 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         **kwargs: Any,
     ):
         super().__init__(text_prompt=text_prompt, *args, **kwargs)
+        self.similarity_threshold = 0.7
+        self.geometric_sim_type = geometric_sim_type
+        self.object_map_erosion_size = self._object_map._erosion_size
+        self.min_obstacle_height = kwargs.get("min_obstacle_height", 0.15)
+        self.max_obstacle_height = kwargs.get("max_obstacle_height", 0.88)
+        self.obstacle_map_area_threshold = kwargs.get("obstacle_map_area_threshold", 1.5)
+        self.agent_radius = kwargs.get("agent_radius", 0.18)
+        self.hole_area_thresh = kwargs.get("hole_area_thresh", 100000)
+        self.floor_height = 3.0
+        self.floor_change_threshold = 1.5
 
         self.mobile_sam_client = MobileSAMClient()
 
@@ -91,8 +99,8 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         )
 
         self.semantic_map = SemanticMap(
-            similarity_threshold=0.7,
-            geometric_sim_type=geometric_sim_type
+            similarity_threshold=self.similarity_threshold,
+            geometric_sim_type=self.geometric_sim_type
         )
 
         self._text_prompt = text_prompt
@@ -112,15 +120,29 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         self._last_value = float("-inf")
         self._last_frontier = np.zeros(2)
 
+        # Multi-floor state management
+        self._floor_obstacle_maps: Dict[int, ObstacleMap] = {}
+        self._floor_value_maps: Dict[int, ValueMap] = {}
+        self._floor_semantic_maps: Dict[int, SemanticMap] = {}
+        self._floor_object_maps: Dict[int, ObjectPointCloudMap] = {}
+        self._last_floor_z = None
+
     def _reset(self) -> None:
         """Reset policy state for new episode."""
         super()._reset()
         self.semantic_map.reset()
         self._value_map.reset()
         self._acyclic_enforcer = AcyclicEnforcer()
-        self.target_text_features = None  # Reset for new episode
+        self.target_text_features = None
         self._last_value = float("-inf")
         self._last_frontier = np.zeros(2)
+
+        # Reset multi-floor state
+        self._floor_obstacle_maps = {}
+        self._floor_value_maps = {}
+        self._floor_semantic_maps = {}
+        self._floor_object_maps = {}
+        self._last_floor_z = None
 
     def _pre_step(self, observations: Dict, masks: Tensor) -> None:
         """Pre-step processing to encode target text features."""
@@ -150,7 +172,14 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             return
         rgb = observations["rgb"][0].cpu().numpy()
         depth = observations["depth"][0].cpu().numpy()
-        x, y = observations["gps"][0].cpu().numpy()
+        
+        # Unpack 3D GPS data natively
+        x_hab, y_up_hab, z_hab = observations["gps"][0].cpu().numpy()
+        
+        # Reconstruct 2D footprint mathematically
+        x = -z_hab
+        y = x_hab
+        
         camera_yaw = observations["compass"][0].cpu().item()
         depth = filter_depth(depth.reshape(depth.shape[:2]), blur_type=None)
         # Habitat GPS makes west negative, so flip y
@@ -161,6 +190,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         self._observations_cache = {
             "nav_depth": observations["depth"],  # for pointnav
             "robot_xy": robot_xy,
+            "robot_z": y_up_hab,
             "robot_heading": camera_yaw,
             "object_map_rgbd": [
                 (
@@ -185,6 +215,59 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             ],
             "habitat_start_yaw": observations["heading"][0].item(),
         }
+
+    def handle_floor_swapping(self, robot_z: float):
+
+        if self._last_floor_z is None:
+            self._last_floor_z = robot_z
+
+        # Check if floor has changed, if so, switch maps
+        if abs(robot_z - self._last_floor_z) > self.floor_change_threshold:
+
+            # Stash the current maps
+            old_floor_id = int(round(self._last_floor_z / self.floor_height))
+            self._floor_obstacle_maps[old_floor_id] = self._obstacle_map
+            self._floor_value_maps[old_floor_id] = self._value_map
+            self._floor_semantic_maps[old_floor_id] = self.semantic_map
+            self._floor_object_maps[old_floor_id] = self._object_map
+
+            # Calculate the new floor id
+            new_floor_id = int(round(robot_z / self.floor_height))
+
+            # Check if maps for new floor already exist, if not instantiate new ones
+            if new_floor_id in self._floor_obstacle_maps.keys():
+
+                self._obstacle_map = self._floor_obstacle_maps[new_floor_id]
+                self._value_map = self._floor_value_maps[new_floor_id]
+                self.semantic_map = self._floor_semantic_maps[new_floor_id]
+                self._object_map = self._floor_object_maps[new_floor_id]
+
+            else:
+
+                self._obstacle_map = ObstacleMap(
+                    min_height=self.min_obstacle_height,
+                    max_height=self.max_obstacle_height,
+                    area_thresh=self.obstacle_map_area_threshold,
+                    agent_radius=self.agent_radius,
+                    hole_area_thresh=self.hole_area_thresh
+                )
+
+                self._value_map = ValueMap(
+                    value_channels=1,
+                    use_max_confidence=True,
+                    obstacle_map=self._obstacle_map
+                )
+
+                self._object_map = ObjectPointCloudMap(
+                    erosion_size=self.object_map_erosion_size
+                )
+                self.semantic_map = SemanticMap(
+                    similarity_threshold=self.similarity_threshold,
+                    geometric_sim_type=self.geometric_sim_type
+                )
+
+            # Update last floor z
+            self._last_floor_z = robot_z
 
     def act(
         self,
@@ -218,6 +301,8 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             """
             print(f"\n==================================================")
             self._pre_step(observations, masks)
+
+            self.handle_floor_swapping(self._observations_cache["robot_z"])
 
             object_map_rgbd = self._observations_cache["object_map_rgbd"]
 
