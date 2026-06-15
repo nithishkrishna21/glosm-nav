@@ -35,7 +35,7 @@ pip install --upgrade "transformers>=4.47.0"
 pip install accelerate
 
 # 7. Install Pinned Image/Data Dependencies
-pip install numpy==1.26.4 scipy==1.12.0 Pillow==9.5.0 imageio-ffmpeg==0.6.0
+pip install numpy==1.26.4 scipy==1.12.0 Pillow==9.5.0 imageio-ffmpeg==0.6.0 numba==0.59.1
 pip install opencv-python==4.5.5.64
 pip install spacy==3.5.0 thinc==8.1.12
 

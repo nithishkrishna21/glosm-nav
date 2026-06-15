@@ -63,7 +63,6 @@ class ObstacleMap(BaseMap):
         topdown_fov: float,
         explore: bool = True,
         update_obstacles: bool = True,
-        stair_mask: np.ndarray = None,
     ) -> None:
         """
         Adds all obstacles from the current view to the map. Also updates the area
@@ -92,45 +91,14 @@ class ObstacleMap(BaseMap):
                 filled_depth = fill_small_holes(depth, self._hole_area_thresh)
             scaled_depth = filled_depth * (max_depth - min_depth) + min_depth
             mask = scaled_depth < max_depth
-            
-            if stair_mask is not None:
-                # 1. Split points into Normal and Stair regions
-                stair_mask_3d = mask & stair_mask
-                normal_mask_3d = mask & (~stair_mask)
-                
-                # 2. Get Point Clouds
-                stair_pc = get_point_cloud(scaled_depth, stair_mask_3d, fx, fy)
-                normal_pc = get_point_cloud(scaled_depth, normal_mask_3d, fx, fy)
-                
-                # 3. Transform to Episodic Frame
-                stair_pc_ep = transform_points(tf_camera_to_episodic, stair_pc)
-                normal_pc_ep = transform_points(tf_camera_to_episodic, normal_pc)
-                
-                # 4. Apply Differentiated Height Filters
-                # Stairs: Thin slice (0.63 - 0.88) to keep them traversable
-                stair_obs = filter_points_by_height(stair_pc_ep, 0.63, 0.88)
-                stair_clearing = filter_points_by_height(stair_pc_ep, 0.0, 0.63)
-                # Normal: Standard range (0.15 - 0.88)
-                normal_obs = filter_points_by_height(normal_pc_ep, self._min_height, self._max_height)
-                
-                # 5. Combine
-                obstacle_cloud = np.concatenate([stair_obs, normal_obs], axis=0)
-            else:
-                # Original Standard Logic
-                point_cloud_camera_frame = get_point_cloud(scaled_depth, mask, fx, fy)
-                point_cloud_episodic_frame = transform_points(tf_camera_to_episodic, point_cloud_camera_frame)
-                obstacle_cloud = filter_points_by_height(point_cloud_episodic_frame, self._min_height, self._max_height)
+            point_cloud_camera_frame = get_point_cloud(scaled_depth, mask, fx, fy)
+            point_cloud_episodic_frame = transform_points(tf_camera_to_episodic, point_cloud_camera_frame)
+            obstacle_cloud = filter_points_by_height(point_cloud_episodic_frame, self._min_height, self._max_height)
 
             # Populate topdown map with obstacle locations
             xy_points = obstacle_cloud[:, :2]
             pixel_points = self._xy_to_px(xy_points)
             self._map[pixel_points[:, 1], pixel_points[:, 0]] = 1
-
-            # Active clearing/hole punching for stairs:
-            if stair_mask is not None and len(stair_clearing) > 0:
-                clearing_xy = stair_clearing[:, :2]
-                clearing_pixels = self._xy_to_px(clearing_xy)
-                self._map[clearing_pixels[:, 1], clearing_pixels[:, 0]] = 0
 
             # Update the navigable area, which is an inverse of the obstacle map after a
             # dilation operation to accommodate the robot's radius.
