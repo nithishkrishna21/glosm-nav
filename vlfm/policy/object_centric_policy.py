@@ -122,13 +122,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         self._blacklist_radius = 0.5  # a frontier within this of a dead-end counts as the same one
         self._blacklist_used = False  # one rescue per episode: after it fires once, stop means stop
 
-        # --- v7: stair-climb state disabled (commented out) ---
-        # self._last_stair_goal = None
-        # self._climb_budget = 40
-        # self._at_stairs_mask_frac = 0.30
-        # self._stair_climb_active = False
-        # self._climb_step_counter = 0
-
     def _reset(self) -> None:
         """Reset policy state for new episode."""
         super()._reset()
@@ -140,11 +133,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         self._last_frontier = np.zeros(2)
         self._blacklisted_frontiers = []
         self._blacklist_used = False
-
-        # --- v7: stair-climb state disabled (commented out) ---
-        # self._last_stair_goal = None
-        # self._stair_climb_active = False
-        # self._climb_step_counter = 0
 
     def _pre_step(self, observations: Dict, masks: Tensor) -> None:
         """Pre-step processing to encode target text features."""
@@ -218,36 +206,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             "habitat_start_yaw": observations["heading"][0].item(),
         }
 
-    # --- v7: stair-goal / stair-approach helpers disabled (commented out) ---
-    # def _compute_stair_goal(
-    #     self,
-    #     depth: np.ndarray,
-    #     tf_camera_to_episodic: np.ndarray,
-    #     min_depth: float,
-    #     max_depth: float,
-    #     fx: float,
-    #     fy: float,
-    # ) -> Union[np.ndarray, None]:
-    #     """Back-project the stair mask into the episodic frame and return an (x, y)
-    #     waypoint at the far edge of the visible staircase, or None if no stairs."""
-    #     if self._stair_mask is None or self._stair_mask.sum() == 0:
-    #         return None
-    #     scaled_depth = depth * (max_depth - min_depth) + min_depth
-    #     mask = (scaled_depth < max_depth) & (self._stair_mask > 0)
-    #     if mask.sum() < 10:
-    #         return None
-    #     pc_camera = get_point_cloud(scaled_depth, mask, fx, fy)
-    #     pc_episodic = transform_points(tf_camera_to_episodic, pc_camera)
-    #     xy = pc_episodic[:, :2]
-    #     robot_xy = self._observations_cache["robot_xy"]
-    #     dists = np.linalg.norm(xy - robot_xy, axis=1)
-    #     far = xy[dists >= np.percentile(dists, 80)]
-    #     return far.mean(axis=0)
-
-    # def _stair_approach_action(self) -> Tuple[str, Tensor]:
-    #     """Approach the detected stairs by PointNav-ing toward the stair goal."""
-    #     return "stair_approach", self._pointnav(self._last_stair_goal, stop=False)
-
     def _filter_blacklisted(self, frontiers: np.ndarray) -> np.ndarray:
         """Drop frontiers within _blacklist_radius of any dead-end (unreachable) spot."""
         if len(self._blacklisted_frontiers) == 0 or len(frontiers) == 0:
@@ -301,12 +259,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
                     detections = d
                 else:
                     detections.extend(d)
-
-                # --- v7: stair goal computation disabled (commented out) ---
-                # sg = self._compute_stair_goal(depth, tf_camera_to_episodic, min_depth, max_depth, fx, fy)
-                # if sg is not None:
-                #     self._last_stair_goal = sg
-                #     print(f"[STAIR GOAL] {np.round(sg, 2)} | robot={np.round(self._observations_cache['robot_xy'], 2)}")
 
                 if self._compute_frontiers:
                     self._obstacle_map.update_map(
@@ -397,15 +349,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             else self._object_detector.predict(img, caption=self._non_coco_caption)
         )
 
-        # --- v7: stair detection disabled (commented out) ---
-        # # Auxiliary Detection: Always check for stairs using Grounding DINO
-        # # caption must end in " ." for the GDINO server's class parsing
-        # stair_detections = self._object_detector.predict(img, caption="stairs .")
-        # stair_detections.filter_by_class(["stairs"])
-        # if stair_detections.num_detections > 0:
-        #     print(f"[STAIRS RAW] confs={[f'{c:.2f}' for c in stair_detections.logits.tolist()]}")
-        # detections.extend(stair_detections)
-
         # Search Sensitivity: Hardcoded to 0.4 to ensure high-recall exploration
         detections.filter_by_conf(0.4)
 
@@ -457,7 +400,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         detections = self._get_object_detections(rgb)
         height, width = rgb.shape[:2]
         self._object_masks = np.zeros((height, width), dtype=np.uint8)
-        # self._stair_mask = np.zeros((height, width), dtype=np.uint8)   # v7: stairs disabled
         if np.array_equal(depth, np.ones_like(depth)) and detections.num_detections > 0:
             depth = self._infer_depth(rgb, min_depth, max_depth)
             obs = list(self._observations_cache["object_map_rgbd"][0])
@@ -471,14 +413,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         objectmap_conf_threshold = self._coco_threshold if has_coco else self._non_coco_threshold
 
         for idx in range(len(detections.logits)):
-
-            # --- v7: stair detection/masking disabled (commented out) ---
-            # if detections.phrases[idx] == "stairs" and detections.logits[idx] >= 0.4:
-            #     bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
-            #     stair_mask, _ = self.mobile_sam_client.segment_bbox(rgb, bbox_denorm.tolist())
-            #     self._stair_mask[stair_mask > 0] = 1
-            #     print(f"[STAIRS] Detected stairs at step {self._num_steps} | conf={detections.logits[idx]:.2f} | mask_px={int(stair_mask.sum())}")
-            #     continue
 
             if detections.phrases[idx] not in target_classes or detections.logits[idx] < objectmap_conf_threshold:
                 continue
