@@ -34,8 +34,6 @@ from vlfm.policy.habitat_policies import (
 )
 from vlfm.mapping.value_map import ValueMap
 from vlfm.policy.utils.acyclic_enforcer import AcyclicEnforcer
-from vlfm.mapping.object_point_cloud_map import ObjectPointCloudMap
-from vlfm.mapping.obstacle_map import ObstacleMap
 from vlfm.obs_transformers.utils import image_resize
 from vlfm.policy.utils.pointnav_policy import WrappedPointNavResNetPolicy
 from vlfm.utils.geometry_utils import get_fov, rho_theta, xyz_yaw_to_tf_matrix, get_point_cloud, transform_points
@@ -82,8 +80,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         self.obstacle_map_area_threshold = kwargs.get("obstacle_map_area_threshold", 1.5)
         self.agent_radius = kwargs.get("agent_radius", 0.18)
         self.hole_area_thresh = kwargs.get("hole_area_thresh", 100000)
-        self.floor_height = 3.0
-        self.floor_change_threshold = 1.5
 
         self.mobile_sam_client = MobileSAMClient()
 
@@ -121,23 +117,17 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         self._last_value = float("-inf")
         self._last_frontier = np.zeros(2)
 
-        # Multi-floor state management
-        self._floor_obstacle_maps: Dict[int, ObstacleMap] = {}
-        self._floor_value_maps: Dict[int, ValueMap] = {}
-        self._floor_semantic_maps: Dict[int, SemanticMap] = {}
-        self._floor_object_maps: Dict[int, ObjectPointCloudMap] = {}
-        self._last_floor_z = None
+        # Dead-end frontiers: spots PointNav proved unreachable; never picked again
+        self._blacklisted_frontiers: List[np.ndarray] = []
+        self._blacklist_radius = 0.5  # a frontier within this of a dead-end counts as the same one
+        self._blacklist_used = False  # one rescue per episode: after it fires once, stop means stop
 
-        # Stair-climb waypoint (most recent stairs seen, in episodic xy)
-        self._last_stair_goal = None
-
-        # Stair-climb control
-        self._climb_budget = 40              # give up a single climb after this many steps
-        self._stair_ascend_mask_frac = 0.30  # stair mask coverage that means "at the stairs"
-        self._stair_ascend_distance = 3.0    # how far up the stairs to project the PointNav goal (m)
-        self._stair_climb_active = False
-        self._climb_step_counter = 0
-        self._stair_ascend_dir = None        # locked ascent direction (episodic xy unit vector)
+        # --- v7: stair-climb state disabled (commented out) ---
+        # self._last_stair_goal = None
+        # self._climb_budget = 40
+        # self._at_stairs_mask_frac = 0.30
+        # self._stair_climb_active = False
+        # self._climb_step_counter = 0
 
     def _reset(self) -> None:
         """Reset policy state for new episode."""
@@ -148,18 +138,13 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         self.target_text_features = None
         self._last_value = float("-inf")
         self._last_frontier = np.zeros(2)
+        self._blacklisted_frontiers = []
+        self._blacklist_used = False
 
-        # Reset multi-floor state
-        self._floor_obstacle_maps = {}
-        self._floor_value_maps = {}
-        self._floor_semantic_maps = {}
-        self._floor_object_maps = {}
-        self._last_floor_z = None
-
-        self._last_stair_goal = None
-        self._stair_climb_active = False
-        self._climb_step_counter = 0
-        self._stair_ascend_dir = None
+        # --- v7: stair-climb state disabled (commented out) ---
+        # self._last_stair_goal = None
+        # self._stair_climb_active = False
+        # self._climb_step_counter = 0
 
     def _pre_step(self, observations: Dict, masks: Tensor) -> None:
         """Pre-step processing to encode target text features."""
@@ -233,112 +218,45 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             "habitat_start_yaw": observations["heading"][0].item(),
         }
 
-    def _compute_stair_goal(
-        self,
-        depth: np.ndarray,
-        tf_camera_to_episodic: np.ndarray,
-        min_depth: float,
-        max_depth: float,
-        fx: float,
-        fy: float,
-    ) -> Union[np.ndarray, None]:
-        """Back-project the stair mask into the episodic frame and return an (x, y)
-        waypoint at the far edge of the visible staircase, or None if no stairs."""
-        if self._stair_mask is None or self._stair_mask.sum() == 0:
-            return None
-        scaled_depth = depth * (max_depth - min_depth) + min_depth
-        mask = (scaled_depth < max_depth) & (self._stair_mask > 0)
-        if mask.sum() < 10:
-            return None
-        pc_camera = get_point_cloud(scaled_depth, mask, fx, fy)
-        pc_episodic = transform_points(tf_camera_to_episodic, pc_camera)
-        xy = pc_episodic[:, :2]
-        robot_xy = self._observations_cache["robot_xy"]
-        dists = np.linalg.norm(xy - robot_xy, axis=1)
-        far = xy[dists >= np.percentile(dists, 80)]
-        return far.mean(axis=0)
+    # --- v7: stair-goal / stair-approach helpers disabled (commented out) ---
+    # def _compute_stair_goal(
+    #     self,
+    #     depth: np.ndarray,
+    #     tf_camera_to_episodic: np.ndarray,
+    #     min_depth: float,
+    #     max_depth: float,
+    #     fx: float,
+    #     fy: float,
+    # ) -> Union[np.ndarray, None]:
+    #     """Back-project the stair mask into the episodic frame and return an (x, y)
+    #     waypoint at the far edge of the visible staircase, or None if no stairs."""
+    #     if self._stair_mask is None or self._stair_mask.sum() == 0:
+    #         return None
+    #     scaled_depth = depth * (max_depth - min_depth) + min_depth
+    #     mask = (scaled_depth < max_depth) & (self._stair_mask > 0)
+    #     if mask.sum() < 10:
+    #         return None
+    #     pc_camera = get_point_cloud(scaled_depth, mask, fx, fy)
+    #     pc_episodic = transform_points(tf_camera_to_episodic, pc_camera)
+    #     xy = pc_episodic[:, :2]
+    #     robot_xy = self._observations_cache["robot_xy"]
+    #     dists = np.linalg.norm(xy - robot_xy, axis=1)
+    #     far = xy[dists >= np.percentile(dists, 80)]
+    #     return far.mean(axis=0)
 
-    def _stair_climb_action(self) -> Tuple[str, Tensor]:
-        """Decide the action for an active stair climb.
+    # def _stair_approach_action(self) -> Tuple[str, Tensor]:
+    #     """Approach the detected stairs by PointNav-ing toward the stair goal."""
+    #     return "stair_approach", self._pointnav(self._last_stair_goal, stop=False)
 
-        While approaching, PointNav toward the stair goal. Once at the stairs, lock the
-        ascent direction and PointNav toward a far goal projected up the stairs, so the
-        agent follows the navmesh ramp up instead of ramming the steps.
-        """
-        mask_frac = float(self._stair_mask.sum()) / self._stair_mask.size
-        if mask_frac < self._stair_ascend_mask_frac:
-            return "stair_approach", self._pointnav(self._last_stair_goal, stop=False)
-
-        robot_xy = self._observations_cache["robot_xy"]
-        # Lock the ascent direction once, the first time we reach the stairs
-        if self._stair_ascend_dir is None:
-            direction = self._last_stair_goal - robot_xy
-            norm = np.linalg.norm(direction)
-            self._stair_ascend_dir = direction / norm if norm > 1e-6 else np.array([1.0, 0.0])
-            print(f"[ASCEND] locked direction {np.round(self._stair_ascend_dir, 2)}")
-        # Project a far goal up the stairs and let PointNav follow the ramp up
-        ascend_goal = robot_xy + self._stair_ascend_dir * self._stair_ascend_distance
-        return "stair_ascend", self._pointnav(ascend_goal, stop=False)
-
-    def handle_floor_swapping(self, robot_z: float):
-
-        if self._last_floor_z is None:
-            self._last_floor_z = robot_z
-
-        # Check if floor has changed, if so, switch maps
-        if abs(robot_z - self._last_floor_z) > self.floor_change_threshold:
-            print(f"[FLOOR SWAP] Z changed {self._last_floor_z:.2f} -> {robot_z:.2f} at step {self._num_steps}")
-
-            # Stash the current maps
-            old_floor_id = int(round(self._last_floor_z / self.floor_height))
-            self._floor_obstacle_maps[old_floor_id] = self._obstacle_map
-            self._floor_value_maps[old_floor_id] = self._value_map
-            self._floor_semantic_maps[old_floor_id] = self.semantic_map
-            self._floor_object_maps[old_floor_id] = self._object_map
-
-            # Calculate the new floor id
-            new_floor_id = int(round(robot_z / self.floor_height))
-
-            # Check if maps for new floor already exist, if not instantiate new ones
-            if new_floor_id in self._floor_obstacle_maps.keys():
-
-                self._obstacle_map = self._floor_obstacle_maps[new_floor_id]
-                self._value_map = self._floor_value_maps[new_floor_id]
-                self.semantic_map = self._floor_semantic_maps[new_floor_id]
-                self._object_map = self._floor_object_maps[new_floor_id]
-
-            else:
-
-                self._obstacle_map = ObstacleMap(
-                    min_height=self.min_obstacle_height,
-                    max_height=self.max_obstacle_height,
-                    area_thresh=self.obstacle_map_area_threshold,
-                    agent_radius=self.agent_radius,
-                    hole_area_thresh=self.hole_area_thresh
-                )
-
-                self._value_map = ValueMap(
-                    value_channels=1,
-                    use_max_confidence=True,
-                    obstacle_map=self._obstacle_map
-                )
-
-                self._object_map = ObjectPointCloudMap(
-                    erosion_size=self.object_map_erosion_size
-                )
-                self.semantic_map = SemanticMap(
-                    similarity_threshold=self.similarity_threshold,
-                    geometric_sim_type=self.geometric_sim_type
-                )
-
-            # Update last floor z
-            self._last_floor_z = robot_z
-
-            # Climb succeeded — exit climb mode and explore the new floor fresh
-            self._stair_climb_active = False
-            self._climb_step_counter = 0
-            self._last_stair_goal = None
-            self._stair_ascend_dir = None
+    def _filter_blacklisted(self, frontiers: np.ndarray) -> np.ndarray:
+        """Drop frontiers within _blacklist_radius of any dead-end (unreachable) spot."""
+        if len(self._blacklisted_frontiers) == 0 or len(frontiers) == 0:
+            return frontiers
+        kept = [
+            f for f in frontiers
+            if all(np.linalg.norm(f - b) > self._blacklist_radius for b in self._blacklisted_frontiers)
+        ]
+        return np.array(kept) if len(kept) > 0 else np.array([])
 
     def act(
         self,
@@ -373,8 +291,6 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             print(f"\n==================================================")
             self._pre_step(observations, masks)
 
-            self.handle_floor_swapping(self._observations_cache["robot_z"])
-
             object_map_rgbd = self._observations_cache["object_map_rgbd"]
 
             detections = None
@@ -386,10 +302,11 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
                 else:
                     detections.extend(d)
 
-                sg = self._compute_stair_goal(depth, tf_camera_to_episodic, min_depth, max_depth, fx, fy)
-                if sg is not None:
-                    self._last_stair_goal = sg
-                    print(f"[STAIR GOAL] {np.round(sg, 2)} | robot={np.round(self._observations_cache['robot_xy'], 2)}")
+                # --- v7: stair goal computation disabled (commented out) ---
+                # sg = self._compute_stair_goal(depth, tf_camera_to_episodic, min_depth, max_depth, fx, fy)
+                # if sg is not None:
+                #     self._last_stair_goal = sg
+                #     print(f"[STAIR GOAL] {np.round(sg, 2)} | robot={np.round(self._observations_cache['robot_xy'], 2)}")
 
                 if self._compute_frontiers:
                     self._obstacle_map.update_map(
@@ -414,8 +331,9 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
                 else:
                     frontiers = np.array([])
 
+            frontiers = self._filter_blacklisted(frontiers)
             self._observations_cache["frontier_sensor"] = frontiers
-            
+
             self._update_value_map(detections)
 
             robot_xy = self._observations_cache["robot_xy"]
@@ -425,25 +343,22 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
                 mode = "initialize"
                 pointnav_action = self._initialize()
             elif goal is None:  # Haven't found target object yet
-                if self._stair_climb_active:
-                    # Already climbing: approach the stairs, then drive forward up them
-                    self._climb_step_counter += 1
-                    mode, pointnav_action = self._stair_climb_action()
-                    if self._climb_step_counter >= self._climb_budget:
-                        print(f"[STAIR CLIMB] budget reached ({self._climb_budget} steps), reverting to explore")
-                        self._stair_climb_active = False
-                        self._climb_step_counter = 0
-                        self._stair_ascend_dir = None
-                else:
-                    mode = "explore"
+                mode = "explore"
+                pointnav_action = self._explore(observations)
+                # First time explore wants to STOP: the frontier it was stuck on is
+                # unreachable. Blacklist it and look ONCE more. After this one rescue,
+                # any further STOP is final (no repeated interception).
+                explore_stopping = int(pointnav_action.detach().cpu().numpy().flatten()[0]) == 0
+                if explore_stopping and not self._blacklist_used and not np.array_equal(self._last_frontier, np.zeros(2)):
+                    print(f"[BLACKLIST] unreachable frontier {np.round(self._last_frontier, 2)} — re-picking (one-time)")
+                    self._blacklisted_frontiers.append(self._last_frontier.copy())
+                    self._last_frontier = np.zeros(2)
+                    self._last_value = float("-inf")
+                    self._blacklist_used = True
+                    self._observations_cache["frontier_sensor"] = self._filter_blacklisted(
+                        self._observations_cache["frontier_sensor"]
+                    )
                     pointnav_action = self._explore(observations)
-                    # If explore wants to STOP (action 0) and we have stairs to try, climb instead of quitting
-                    explore_stopping = int(pointnav_action.detach().cpu().numpy().flatten()[0]) == 0
-                    if explore_stopping and self._last_stair_goal is not None:
-                        print(f"[STAIR CLIMB] engaging at step {self._num_steps} | goal={np.round(self._last_stair_goal, 2)}")
-                        self._stair_climb_active = True
-                        self._climb_step_counter = 0
-                        mode, pointnav_action = self._stair_climb_action()
             else:
                 mode = "navigate"
                 pointnav_action = self._pointnav(goal[:2], stop=True)
@@ -482,24 +397,21 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             else self._object_detector.predict(img, caption=self._non_coco_caption)
         )
 
-        # Auxiliary Detection: Always check for stairs using Grounding DINO
-        # caption must end in " ." for the GDINO server's class parsing
-        stair_detections = self._object_detector.predict(img, caption="stairs .")
-        stair_detections.filter_by_class(["stairs"])
-        if stair_detections.num_detections > 0:
-            print(f"[STAIRS RAW] confs={[f'{c:.2f}' for c in stair_detections.logits.tolist()]}")
-        detections.extend(stair_detections)
-        
+        # --- v7: stair detection disabled (commented out) ---
+        # # Auxiliary Detection: Always check for stairs using Grounding DINO
+        # # caption must end in " ." for the GDINO server's class parsing
+        # stair_detections = self._object_detector.predict(img, caption="stairs .")
+        # stair_detections.filter_by_class(["stairs"])
+        # if stair_detections.num_detections > 0:
+        #     print(f"[STAIRS RAW] confs={[f'{c:.2f}' for c in stair_detections.logits.tolist()]}")
+        # detections.extend(stair_detections)
+
         # Search Sensitivity: Hardcoded to 0.4 to ensure high-recall exploration
         detections.filter_by_conf(0.4)
-    
-        # Check if the target was found (ignoring the stairs we just added)
-        target_found = any(p in target_classes for p in detections.phrases)
 
-        if has_coco and has_non_coco and not target_found:
+        if has_coco and has_non_coco and detections.num_detections == 0:
             # Retry with non-coco object detector
             detections = self._object_detector.predict(img, caption=self._non_coco_caption)
-            detections.extend(stair_detections)
             detections.filter_by_conf(self._non_coco_threshold)
 
 
@@ -545,7 +457,7 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
         detections = self._get_object_detections(rgb)
         height, width = rgb.shape[:2]
         self._object_masks = np.zeros((height, width), dtype=np.uint8)
-        self._stair_mask = np.zeros((height, width), dtype=np.uint8)
+        # self._stair_mask = np.zeros((height, width), dtype=np.uint8)   # v7: stairs disabled
         if np.array_equal(depth, np.ones_like(depth)) and detections.num_detections > 0:
             depth = self._infer_depth(rgb, min_depth, max_depth)
             obs = list(self._observations_cache["object_map_rgbd"][0])
@@ -560,35 +472,33 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
 
         for idx in range(len(detections.logits)):
 
-            # stairs detected
-            if detections.phrases[idx] == "stairs" and detections.logits[idx] >= 0.4:
-                bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
-                x1, y1, x2, y2 = bbox_denorm.astype(int)
-                stair_mask, _ = self.mobile_sam_client.segment_bbox(rgb, bbox_denorm.tolist())
-                self._stair_mask[stair_mask > 0] = 1
-                print(f"[STAIRS] Detected stairs at step {self._num_steps} | conf={detections.logits[idx]:.2f} | bbox=({x1},{y1},{x2},{y2}) | mask_px={int(stair_mask.sum())}")
+            # --- v7: stair detection/masking disabled (commented out) ---
+            # if detections.phrases[idx] == "stairs" and detections.logits[idx] >= 0.4:
+            #     bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
+            #     stair_mask, _ = self.mobile_sam_client.segment_bbox(rgb, bbox_denorm.tolist())
+            #     self._stair_mask[stair_mask > 0] = 1
+            #     print(f"[STAIRS] Detected stairs at step {self._num_steps} | conf={detections.logits[idx]:.2f} | mask_px={int(stair_mask.sum())}")
+            #     continue
+
+            if detections.phrases[idx] not in target_classes or detections.logits[idx] < objectmap_conf_threshold:
                 continue
 
-            else:               
-                if detections.phrases[idx] not in target_classes or detections.logits[idx] < objectmap_conf_threshold:
-                    continue
-        
-                bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
-                x1, y1, x2, y2 = bbox_denorm.astype(int)
+            bbox_denorm = detections.boxes[idx].cpu().numpy() * np.array([width, height, width, height])
+            x1, y1, x2, y2 = bbox_denorm.astype(int)
 
-                object_mask, _ = self.mobile_sam_client.segment_bbox(rgb, bbox_denorm.tolist())
+            object_mask, _ = self.mobile_sam_client.segment_bbox(rgb, bbox_denorm.tolist())
 
-                self._object_masks[object_mask > 0] = 1
-                self._object_map.update_map(
-                    self._target_object,
-                    depth,
-                    object_mask,
-                    tf_camera_to_episodic,
-                    min_depth,
-                    max_depth,
-                    fx,
-                    fy,
-                )
+            self._object_masks[object_mask > 0] = 1
+            self._object_map.update_map(
+                self._target_object,
+                depth,
+                object_mask,
+                tf_camera_to_episodic,
+                min_depth,
+                max_depth,
+                fx,
+                fy,
+            )
 
         cone_fov = get_fov(fx, depth.shape[1])
         self._object_map.update_explored(tf_camera_to_episodic, max_depth, cone_fov)
