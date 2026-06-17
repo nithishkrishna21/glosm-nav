@@ -297,11 +297,18 @@ class ObjectCentricPolicy(HabitatMixin, ITMPolicyV2):
             elif goal is None:  # Haven't found target object yet
                 mode = "explore"
                 pointnav_action = self._explore(observations)
-                # First time explore wants to STOP: the frontier it was stuck on is
-                # unreachable. Blacklist it and look ONCE more. After this one rescue,
-                # any further STOP is final (no repeated interception).
-                explore_stopping = int(pointnav_action.detach().cpu().numpy().flatten()[0]) == 0
-                if explore_stopping and not self._blacklist_used and not np.array_equal(self._last_frontier, np.zeros(2)):
+
+                isExploreStopping = int(pointnav_action.detach().cpu().numpy().flatten()[0]) == 0
+                frontiers = self._observations_cache["frontier_sensor"]
+
+                """if the robot issues a STOP command while exploring
+                but we still have the extra chance and we have valid frontiers left to explore,
+                then force the robot to explore again by BLACKLISTING 
+                the current frontier
+                """
+                if (isExploreStopping and not self._blacklist_used and len(frontiers) > 0
+                    and not np.array_equal(self._last_frontier, np.zeros(2))):
+
                     print(f"[BLACKLIST] unreachable frontier {np.round(self._last_frontier, 2)} — re-picking (one-time)")
                     self._blacklisted_frontiers.append(self._last_frontier.copy())
                     self._last_frontier = np.zeros(2)
