@@ -1,8 +1,23 @@
 # GLOSM-Nav: Global-Local Open-Vocabulary Semantic Mapping for Zero-Shot Object-Goal Navigation
 
+> A zero-shot object-goal navigation framework that builds a persistent **3D open-vocabulary semantic map** to overcome "spatial amnesia" — locating target objects in unseen environments with no task-specific training.
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Task-Zero--Shot%20ObjectNav-blue">
+  <img src="https://img.shields.io/badge/Framework-PyTorch-ee4c2c">
+  <img src="https://img.shields.io/badge/Simulator-Habitat-success">
+  <img src="https://img.shields.io/badge/Benchmarks-HM3D%20%7C%20MP3D-purple">
+  <img src="https://img.shields.io/badge/Domain-Embodied%20AI-orange">
+</p>
+
+**Author:** Nithish Krishna Shreenevasan
+**Advisor:** Dr. Vishal Patel — Johns Hopkins University (MSE Data Science)
+
 <p align="center">
   <img src="docs/GLOSM-Nav_SucessVid_GIF.gif" width="45%" alt="GLOSM-Nav zero-shot ObjectNav demo">
 </p>
+
+---
 
 ## :sparkles: Overview
 
@@ -248,7 +263,7 @@ export YOLOV7_PORT=12184
 export GROUNDING_DINO_PORT=12181
 export CLIP_PORT=12186
 
-python -um vlfm.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="iou" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config1" 2>&1 | tee logs/hm3d_objectnav_v1_config1.log
+python -um glosm_nav.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="iou" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config1" 2>&1 | tee logs/hm3d_objectnav_v1_config1.log
 ```
 
 ### Config 2: OpenCLIP + Overlap (NN-Ratio)
@@ -261,7 +276,7 @@ export YOLOV7_PORT=13184
 export GROUNDING_DINO_PORT=13181
 export CLIP_PORT=13186
 
-python -um vlfm.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="overlap" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config2" 2>&1 | tee logs/hm3d_objectnav_v1_config2.log
+python -um glosm_nav.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="overlap" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config2" 2>&1 | tee logs/hm3d_objectnav_v1_config2.log
 ```
 
 ### Config 3: MetaCLIP + IoU
@@ -274,7 +289,7 @@ export YOLOV7_PORT=14184
 export GROUNDING_DINO_PORT=14181
 export CLIP_PORT=14186
 
-python -um vlfm.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="iou" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config3" 2>&1 | tee logs/hm3d_objectnav_v1_config3.log
+python -um glosm_nav.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="iou" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config3" 2>&1 | tee logs/hm3d_objectnav_v1_config3.log
 ```
 
 ### Config 4: MetaCLIP + Overlap (NN-Ratio)
@@ -287,7 +302,7 @@ export YOLOV7_PORT=15184
 export GROUNDING_DINO_PORT=15181
 export CLIP_PORT=15186
 
-python -um vlfm.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="overlap" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config4" 2>&1 | tee logs/hm3d_objectnav_v1_config4.log
+python -um glosm_nav.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="overlap" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config4" 2>&1 | tee logs/hm3d_objectnav_v1_config4.log
 ```
 
 ---
@@ -305,7 +320,7 @@ export YOLOV7_PORT=12184
 export GROUNDING_DINO_PORT=12181
 export CLIP_PORT=12186
 
-python -um vlfm.run --config-name=experiments/glosm_hm3d_objectnav_v2 \
+python -um glosm_nav.run --config-name=experiments/glosm_hm3d_objectnav_v2 \
   habitat_baselines.rl.policy.geometric_sim_type="iou" \
   habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v2_config1" \
   2>&1 | tee logs/hm3d_objectnav_v2_config1.log
@@ -321,7 +336,7 @@ export YOLOV7_PORT=14184
 export GROUNDING_DINO_PORT=14181
 export CLIP_PORT=14186
 
-python -um vlfm.run --config-name=experiments/glosm_hm3d_objectnav_v2 \
+python -um glosm_nav.run --config-name=experiments/glosm_hm3d_objectnav_v2 \
   habitat_baselines.rl.policy.geometric_sim_type="iou" \
   habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v2_config3" \
   2>&1 | tee logs/hm3d_objectnav_v2_config3.log
@@ -342,7 +357,7 @@ export YOLOV7_PORT=12184
 export GROUNDING_DINO_PORT=12181
 export CLIP_PORT=12186
 
-python -um vlfm.run --config-name=experiments/glosm_mp3d_objectnav \
+python -um glosm_nav.run --config-name=experiments/glosm_mp3d_objectnav \
   habitat_baselines.rl.policy.geometric_sim_type="iou" \
   habitat_baselines.tensorboard_dir="tb/mp3d_objectnav_config1" \
   2>&1 | tee logs/mp3d_objectnav_config1.log
@@ -358,7 +373,7 @@ export YOLOV7_PORT=14184
 export GROUNDING_DINO_PORT=14181
 export CLIP_PORT=14186
 
-python -um vlfm.run --config-name=experiments/glosm_mp3d_objectnav \
+python -um glosm_nav.run --config-name=experiments/glosm_mp3d_objectnav \
   habitat_baselines.rl.policy.geometric_sim_type="iou" \
   habitat_baselines.tensorboard_dir="tb/mp3d_objectnav_config3" \
   2>&1 | tee logs/mp3d_objectnav_config3.log

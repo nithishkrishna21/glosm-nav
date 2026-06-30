@@ -5,11 +5,11 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vlfm"
+name = "glosm-nav"
 version = "0.1"
-description = "Vision-Language Frontier Maps"
+description = "Global-Local Open-Vocabulary Semantic Mapping for Zero-Shot Object-Goal Navigation"
 authors = [
-    {name = "Naoki Yokoyama", email = "nyokoyama@theaiinstitute.com"},
+    {name = "Nithish Krishna Shreenevasan", email = "nithishkrishna2002@gmail.com"},
 ]
 readme = "README.md"
 requires-python = ">=3.9"
@@ -48,10 +48,10 @@ reality = [
 
 [project.urls]
 "Homepage" = "theaiinstitute.com"
-"GitHub" = "https://github.com/bdaiinstitute/vlfm"
+"GitHub" = "https://github.com/nithishkrishna21/glosm-nav"
 
 [tool.setuptools.packages.find]
-where = ["vlfm"]
+where = ["glosm_nav"]
 
 [tool.ruff]
 # Enable pycodestyle (`E`), Pyflakes (`F`), and import sorting (`I`)
@@ -132,5 +132,5 @@ strict_equality = true
 warn_unreachable = true
 warn_redundant_casts = true
 no_implicit_optional = true
-files = ['vlfm','test','scripts']
+files = ['glosm_nav','test','scripts']
 exclude = "^(docker|.*external|.*thirdparty|.*install|.*build|.*_experimental|.*_pb2.py|.*_pb2_grpc.py)"

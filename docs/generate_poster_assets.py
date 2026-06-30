@@ -4,11 +4,11 @@ import numpy as np
 import os
 import sys
 
-# Ensure vlfm is in the Python path
+# Ensure glosm_nav is in the Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from vlfm.vlm.yolov7 import YOLOv7
-from vlfm.object_centric.sam_segmenter import SAMSegmenter
+from glosm_nav.vlm.yolov7 import YOLOv7
+from glosm_nav.object_centric.sam_segmenter import SAMSegmenter
 
 # ══════════════════════════════════════════════════════════════════
 # Helper Methods (Exact parity with object_segmentation.py)
