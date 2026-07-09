@@ -1,14 +1,3 @@
-"""
-object_map.py
-
-Purpose: Stage 2 - Object Association & Mapping
-Maintains a persistent map of objects across frames by matching new detections
-to existing objects using geometric similarity (IoU or nnratio) and semantic similarity (cosine).
-
-This file will be used by: object_policy.py (the main orchestrator)
-This file depends on: object_segmentation.py (Segmentation class)
-"""
-
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -34,13 +23,15 @@ class SemanticMapObject:
         point_cloud: o3d.geometry.PointCloud,
         features: torch.Tensor,
         confidence: float,
-        object_id: int
+        object_id: int,
+        det_confidence: float = 0.0,
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.object_id = object_id
         self.point_cloud = point_cloud
         self.features = features
         self.confidence = confidence
+        self.det_confidence = det_confidence
         self.num_occurences = 1
         self.is_visible = False
 
@@ -96,7 +87,11 @@ class SemanticMapObject:
         self.features = F.normalize(self.features, dim=-1).float().to(self.device)
 
         # update the confidence
-        self.confidence = (self.num_occurences * self.confidence + segmentation.confidence) / (self.num_occurences + 1)
+        self.confidence = (self.num_occurences * self.confidence + segmentation.mask_confidence) / (self.num_occurences + 1)
+
+        # keep the label of the highest-confidence detection this instance has seen
+        if segmentation.det_confidence > self.det_confidence:
+            self.det_confidence = segmentation.det_confidence
 
         # update the number of occurences
         self.num_occurences += 1
@@ -129,7 +124,7 @@ class SemanticMap:
 
     def reset(self):
         """
-        Reset the object map to empty.
+        Reset the semantic map to empty.
         """
         self.objects = []
         self.next_object_id = 0
@@ -373,8 +368,9 @@ class SemanticMap:
         obj = SemanticMapObject(
             point_cloud = segmentation.point_cloud,
             features = segmentation.features,
-            confidence = segmentation.confidence,
-            object_id = self.next_object_id
+            confidence = segmentation.mask_confidence,
+            object_id = self.next_object_id,
+            det_confidence = segmentation.det_confidence,
         )
 
         return obj

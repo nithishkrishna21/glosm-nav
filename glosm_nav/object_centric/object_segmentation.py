@@ -1,16 +1,3 @@
-"""
-object_detection.py
-
-Purpose: Stage 1 - Object Detection, Feature Extraction, and Point Cloud Generation
-Handles: SAM segmentation → HOV-SG 3-crop fusion → Depth to point cloud
-
-This file will be used by: object_policy.py (the main orchestrator)
-This file depends on:
-    - MobileSAM (for segmentation)
-    - SigLIP/OpenCLIP (for feature extraction)
-    - ConceptGraphs utils (for depth → point cloud conversion)
-"""
-
 import cv2
 import numpy as np
 import torch
@@ -35,7 +22,7 @@ class Segmentation:
         bbox: (x1, y1, x2, y2) bounding box
         features: (D,) fused feature vector (after HOV-SG 3-crop fusion)
         point_cloud: (N, 3) 3D points in WORLD frame
-        confidence: Segmentation confidence from SAM
+        mask_confidence: SAM mask-quality score (predicted IoU)
     """
     def __init__(
         self,
@@ -43,13 +30,15 @@ class Segmentation:
         bbox: np.ndarray,
         features: torch.Tensor,
         point_cloud: o3d.geometry.PointCloud,
-        confidence: float
+        mask_confidence: float,
+        det_confidence: float = 0.0,
     ):
         self.mask = mask
         self.bbox = bbox
         self.features = features
         self.point_cloud = point_cloud
-        self.confidence = confidence
+        self.mask_confidence = mask_confidence
+        self.det_confidence = det_confidence
 
 
 class ObjectSegmenter:
@@ -130,9 +119,6 @@ class ObjectSegmenter:
         
         else:
             masks = self._segment_image_with_bboxes(rgb, detections)
-            # if DEBUG:
-            #     print(f"DEBUG: Raw masks from SAM: {len(masks)}")
-
 
         # ══════════════════════════════════════════════════════════════
         # STEP 2: Extract global feature ONCE (reused for all objects)
@@ -222,8 +208,9 @@ class ObjectSegmenter:
                 bbox=mask_data['bbox'],
                 features=fused_feats[i],
                 point_cloud=point_clouds[i],
-                # confidence=mask_data['predicted_iou']
-                confidence=mask_data['stability_score']
+                # mask_confidence=mask_data['predicted_iou']
+                mask_confidence=mask_data['mask_confidence'],
+                det_confidence=mask_data['det_confidence'],
             )
             segmentations.append(segmentation)
 
@@ -233,40 +220,26 @@ class ObjectSegmenter:
     # Helper Methods
     # ══════════════════════════════════════════════════════════════════
 
-    # MobileSAM - Automatic Mask Generation
-    def _segment_with_sam(self, rgb: np.ndarray) -> List[Dict]:
-        """
-        Run SAM segmentation on RGB image.
-
-        Returns: List of dicts with keys: 'segmentation', 'bbox', 'stability_score', 'predicted_iou
-                 - 'segmentation': (H, W) binary mask
-                 - 'bbox': (x, y, w, h) bounding box
-                 - 'stability_score': float confidence score
-                 - 'predicted_iou': float IoU score
-        """
-
-        masks = self.sam_segmenter.segment_image(rgb)
-        return masks
-
     # MobileSAM - Predict
     def _segment_image_with_bboxes(self, rgb: np.ndarray, detections: ObjectDetections) -> List[Dict]:
         """
         Run SAM segmentation on RGB image with the help of bboxes
 
-        Returns: List of dicts with keys: 'segmentation', 'bbox', 'stability_score', 'predicted_iou
+        Returns: List of dicts with keys: 'segmentation', 'bbox', 'mask_confidence', 'predicted_iou
                  - 'segmentation': (H, W) binary mask
                  - 'bbox': (x, y, w, h) bounding box
-                 - 'stability_score': float confidence score
+                 - 'mask_confidence': float confidence score
         """
         masks = []
         height, width = rgb.shape[:2]
-        for bbox in detections.boxes:
+        for i, bbox in enumerate(detections.boxes):
             bbox_denorm = bbox * np.array([width, height, width, height])
             raw_mask, score = self.sam_segmenter.segment_bbox(rgb, bbox_denorm.tolist())
             mask = {
                 'segmentation': raw_mask,
                 'bbox': bbox_denorm,
-                'stability_score': score
+                'mask_confidence': score,
+                'det_confidence': float(detections.logits[i]),
             }
             masks.append(mask)
 
