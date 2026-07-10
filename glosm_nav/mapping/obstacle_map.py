@@ -98,6 +98,15 @@ class ObstacleMap(BaseMap):
             # Populate topdown map with obstacle locations
             xy_points = obstacle_cloud[:, :2]
             pixel_points = self._xy_to_px(xy_points)
+            # MP3D scenes can exceed the fixed map extent; drop out-of-bounds points
+            h, w = self._map.shape
+            in_bounds = (
+                (pixel_points[:, 1] >= 0)
+                & (pixel_points[:, 1] < h)
+                & (pixel_points[:, 0] >= 0)
+                & (pixel_points[:, 0] < w)
+            )
+            pixel_points = pixel_points[in_bounds]
             self._map[pixel_points[:, 1], pixel_points[:, 0]] = 1
 
             # Update the navigable area, which is an inverse of the obstacle map after a
