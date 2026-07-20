@@ -4,7 +4,7 @@ import os
 
 import cv2
 
-from vlfm.utils.visualization import generate_text_image
+from glosm_nav.utils.visualization import generate_text_image
 
 
 def test_visualization() -> None:

@@ -1,9 +1,71 @@
-# GLOSM-Nav: Global-to-Local Object-Centric Semantic Mapping
+# GLOSM-Nav: Global-Local Open-Vocabulary Semantic Mapping for Zero-Shot Object-Goal Navigation
+
+> A zero-shot object-goal navigation framework that builds a persistent **3D open-vocabulary semantic map** to overcome "spatial amnesia" — locating target objects in unseen environments with no task-specific training.
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Task-Zero--Shot%20ObjectNav-blue">
+  <img src="https://img.shields.io/badge/Framework-PyTorch-ee4c2c">
+  <img src="https://img.shields.io/badge/Simulator-Habitat-success">
+  <img src="https://img.shields.io/badge/Benchmarks-HM3D%20%7C%20MP3D-purple">
+  <img src="https://img.shields.io/badge/Domain-Embodied%20AI-orange">
+</p>
+
+**Author:** Nithish Krishna Shreenevasan
+**Advisor:** Dr. Vishal Patel — Johns Hopkins University (MSE Data Science)
+
+<p align="center">
+  <img src="docs/GLOSM-Nav_SucessVid_GIF.gif" width="45%" alt="GLOSM-Nav zero-shot ObjectNav demo">
+</p>
+
+---
 
 ## :sparkles: Overview
 
 GLOSM-Nav is a zero-shot semantic navigation framework designed to overcome the challenge of "spatial amnesia" found in reactive modular agents. While standard 2D semantic maps often lack long-term geometric consistency, GLOSM-Nav introduces a persistent **Object-Centric 3D Mapping** system that grounds semantic detections in concrete world coordinates. By integrating high-precision local perception with a hierarchical **Global Scene Fallback** mechanism, the agent bridges the gap between frontier-based exploration and persistent object-centric grounding. This architecture enables robust, zero-shot autonomous search in unfamiliar environments, prioritizing long-horizon geometric memory without the need for large-scale offline training.
 
+## :building_construction: Architecture
+
+GLOSM-Nav pairs a persistent 3D open-vocabulary object memory with frontier-based exploration. Each step runs two stages:
+
+**1. Perception → 3D Semantic Dictionary.** Open-vocabulary detection (YOLOv7 + MobileSAM) segments objects from the RGB-D stream. For every object, hierarchical MetaCLIP features (global scene + context crop + masked crop) are fused, and the masked depth is back-projected into a 3D point cloud. A dual-similarity association check (3D overlap + cosine similarity) either merges the detection into an existing object node or initializes a new one — incrementally building a persistent open-vocabulary semantic dictionary.
+
+<p align="center">
+  <img src="docs/Fig%20A%20Fixed.png" width="45%" alt="GLOSM-Nav perception and 3D semantic dictionary pipeline">
+  <br><em>Perception and 3D semantic dictionary construction.</em>
+</p>
+
+**2. Semantic Mapping → Navigation.** Dictionary objects visible in the current view are scored against the target query and projected into a 2D value map. Frontier candidates are ranked by this value map, filtered by an acyclic enforcer, and the highest-value frontier is handed to a geometric PointNav policy that executes low-level actions — looping until the target is detected and reached.
+
+<p align="center">
+  <img src="docs/Fig%20B%20Fixed%20v2.png" width="45%" alt="GLOSM-Nav navigation pipeline">
+  <br><em>Navigation: semantic map and value map drive frontier selection and PointNav.</em>
+</p>
+
+## :bar_chart: Results
+
+Evaluated on **HM3D ObjectNav-v2** (1,000 episodes, 6 categories) and **MP3D** (cross-dataset generalization, 21 categories). Metrics are Success Rate (SR) and SPL, in %.
+
+#### Zero-Shot Methods
+| Method | HM3D SR | HM3D SPL | MP3D SR | MP3D SPL |
+|---|---|---|---|---|
+| VoroNav | 42.0 | 26.0 | — | — |
+| L3MVN | 50.4 | 23.1 | — | — |
+| VLFM (baseline) | 52.5 | 30.4 | 36.4 | 17.5 |
+| SG-Nav | 54.0 | 24.9 | 40.2 | 16.0 |
+| OpenFMNav | 54.9 | 24.4 | — | — |
+| TriHelper | 56.5 | 25.3 | — | — |
+| **GLOSM-Nav (MetaCLIP)** | **69.9** | **30.52** | *In Progress* | *In Progress* |
+| **GLOSM-Nav (OpenCLIP)** | **70.5** | **30.95** | *In Progress* | *In Progress* |
+| WMNav | 72.2 | 33.3 | 45.4 | 17.2 |
+| CogNav | 72.5 | 26.2 | 46.6 | 16.1 |
+
+#### Trained / Supervised Methods
+| Method | HM3D SR | HM3D SPL | MP3D SR | MP3D SPL |
+|---|---|---|---|---|
+| PIRLNav | 61.9 | 27.9 | — | — |
+| Qwen-RobotNav-4B | 75.6 | 30.6 | 52.2 | 16.0 |
+
+**Despite using no navigation training, no world model, and no LLM-based planning, GLOSM-Nav stays competitive with the strongest zero-shot methods (WMNav, CogNav) and approaches trained models like Qwen-RobotNav-4B — which rely on millions of training samples.**
 
 ## 1. Initial Setup
 ```bash
@@ -35,7 +97,7 @@ pip install --upgrade "transformers>=4.47.0"
 pip install accelerate
 
 # 7. Install Pinned Image/Data Dependencies
-pip install numpy==1.26.4 scipy==1.12.0 Pillow==9.5.0 imageio-ffmpeg==0.6.0
+pip install numpy==1.26.4 scipy==1.12.0 Pillow==9.5.0 imageio-ffmpeg==0.6.0 numba==0.59.1
 pip install opencv-python==4.5.5.64
 pip install spacy==3.5.0 thinc==8.1.12
 
@@ -172,7 +234,21 @@ rm objectnav_mp3d_v1.zip
 
 ---
 
-## 3. Parallel Ablation Studies (4 GPU Setup)
+## 3. Launch the VLM Model Servers (Required Before Any Run)
+GLOSM-Nav queries the perception models (GroundingDINO, MobileSAM, YOLOv7, CLIP) as persistent HTTP servers. **You must start these servers before running any evaluation below.** Each script spins up all four servers in a `tmux` session, on a dedicated GPU and matching ports for that config:
+
+```bash
+./scripts/config_scripts/launch_config1.sh   # OpenCLIP + IoU      (GPU 0)
+./scripts/config_scripts/launch_config2.sh   # OpenCLIP + Overlap  (GPU 1)
+./scripts/config_scripts/launch_config3.sh   # MetaCLIP + IoU      (GPU 2)
+./scripts/config_scripts/launch_config4.sh   # MetaCLIP + Overlap  (GPU 3)
+```
+
+> **Note:** Wait up to ~90 seconds for the model weights to finish loading before launching the evaluation. The ports set by each `launch_configN.sh` match the ports used in the corresponding evaluation config below.
+
+---
+
+## 4. Parallel Ablation Studies (4 GPU Setup)
 To test the different variations of GLOSM-Nav simultaneously, you can launch four `tmux` sessions to run parallel jobs on distinct GPUs with isolated network ports.
 
 > **Note:** Ensure your conda environment (e.g. `glosm_nav`) is activated in each session window.
@@ -187,7 +263,7 @@ export YOLOV7_PORT=12184
 export GROUNDING_DINO_PORT=12181
 export CLIP_PORT=12186
 
-python -um vlfm.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="iou" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config1" 2>&1 | tee logs/hm3d_objectnav_v1_config1.log
+python -um glosm_nav.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="iou" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config1" 2>&1 | tee logs/hm3d_objectnav_v1_config1.log
 ```
 
 ### Config 2: OpenCLIP + Overlap (NN-Ratio)
@@ -200,7 +276,7 @@ export YOLOV7_PORT=13184
 export GROUNDING_DINO_PORT=13181
 export CLIP_PORT=13186
 
-python -um vlfm.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="overlap" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config2" 2>&1 | tee logs/hm3d_objectnav_v1_config2.log
+python -um glosm_nav.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="overlap" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config2" 2>&1 | tee logs/hm3d_objectnav_v1_config2.log
 ```
 
 ### Config 3: MetaCLIP + IoU
@@ -213,7 +289,7 @@ export YOLOV7_PORT=14184
 export GROUNDING_DINO_PORT=14181
 export CLIP_PORT=14186
 
-python -um vlfm.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="iou" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config3" 2>&1 | tee logs/hm3d_objectnav_v1_config3.log
+python -um glosm_nav.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="iou" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config3" 2>&1 | tee logs/hm3d_objectnav_v1_config3.log
 ```
 
 ### Config 4: MetaCLIP + Overlap (NN-Ratio)
@@ -226,12 +302,12 @@ export YOLOV7_PORT=15184
 export GROUNDING_DINO_PORT=15181
 export CLIP_PORT=15186
 
-python -um vlfm.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="overlap" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config4" 2>&1 | tee logs/hm3d_objectnav_v1_config4.log
+python -um glosm_nav.run --config-name=experiments/object_centric_hm3d habitat_baselines.rl.policy.geometric_sim_type="overlap" habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v1_config4" 2>&1 | tee logs/hm3d_objectnav_v1_config4.log
 ```
 
 ---
 
-## 4. Automated Complete Evaluation (Grand Tour)
+## 5. Automated Complete Evaluation (Grand Tour)
 For the final baseline or benchmark evaluation over the full dataset (e.g. `v0.2`), launch the multi-process infrastructure to host the vision-language backbone models, then sequentially run the evaluation policy.
 
 ### Run 1: OpenCLIP (Config 1 Best)
@@ -244,7 +320,7 @@ export YOLOV7_PORT=12184
 export GROUNDING_DINO_PORT=12181
 export CLIP_PORT=12186
 
-python -um vlfm.run --config-name=experiments/glosm_hm3d_objectnav_v2 \
+python -um glosm_nav.run --config-name=experiments/glosm_hm3d_objectnav_v2 \
   habitat_baselines.rl.policy.geometric_sim_type="iou" \
   habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v2_config1" \
   2>&1 | tee logs/hm3d_objectnav_v2_config1.log
@@ -260,7 +336,7 @@ export YOLOV7_PORT=14184
 export GROUNDING_DINO_PORT=14181
 export CLIP_PORT=14186
 
-python -um vlfm.run --config-name=experiments/glosm_hm3d_objectnav_v2 \
+python -um glosm_nav.run --config-name=experiments/glosm_hm3d_objectnav_v2 \
   habitat_baselines.rl.policy.geometric_sim_type="iou" \
   habitat_baselines.tensorboard_dir="tb/hm3d_objectnav_v2_config3" \
   2>&1 | tee logs/hm3d_objectnav_v2_config3.log
@@ -268,7 +344,7 @@ python -um vlfm.run --config-name=experiments/glosm_hm3d_objectnav_v2 \
 
 ---
 
-## 5. MP3D Zero-Shot Evaluation
+## 6. MP3D Zero-Shot Evaluation
 To evaluate your pipeline's generalization capabilities on the Matterport3D dataset, use the dedicated MP3D config. We will launch the two best variants in parallel against this new dataset.
 
 ### Run 1: OpenCLIP (Config 1 Best)
@@ -281,7 +357,7 @@ export YOLOV7_PORT=12184
 export GROUNDING_DINO_PORT=12181
 export CLIP_PORT=12186
 
-python -um vlfm.run --config-name=experiments/glosm_mp3d_objectnav \
+python -um glosm_nav.run --config-name=experiments/glosm_mp3d_objectnav \
   habitat_baselines.rl.policy.geometric_sim_type="iou" \
   habitat_baselines.tensorboard_dir="tb/mp3d_objectnav_config1" \
   2>&1 | tee logs/mp3d_objectnav_config1.log
@@ -297,7 +373,7 @@ export YOLOV7_PORT=14184
 export GROUNDING_DINO_PORT=14181
 export CLIP_PORT=14186
 
-python -um vlfm.run --config-name=experiments/glosm_mp3d_objectnav \
+python -um glosm_nav.run --config-name=experiments/glosm_mp3d_objectnav \
   habitat_baselines.rl.policy.geometric_sim_type="iou" \
   habitat_baselines.tensorboard_dir="tb/mp3d_objectnav_config3" \
   2>&1 | tee logs/mp3d_objectnav_config3.log
@@ -305,7 +381,7 @@ python -um vlfm.run --config-name=experiments/glosm_mp3d_objectnav \
 
 ---
 
-## 6. Monitoring Progress
+## 7. Monitoring Progress
 To check back in on your logging later, view your active sessions and reattach to the correct one:
 ```bash
 tmux ls
@@ -322,3 +398,11 @@ tmux attach-session -t mp3d_objectnav_config1
 # If monitoring MP3D MetaCLIP (Config 3):
 tmux attach-session -t mp3d_objectnav_config3
 ```
+
+---
+
+## Acknowledgements
+
+This repository is built heavily on top of [**VLFM** (Vision-Language Frontier Maps)](https://github.com/bdaiinstitute/vlfm) by the Boston Dynamics AI Institute — its frontier-based value-map navigation infrastructure forms the backbone of GLOSM-Nav. We are grateful to the authors for open-sourcing their work.
+
+The 3D semantic mapping additionally adapts ideas from [**ConceptGraphs**](https://github.com/concept-graphs/concept-graphs) (open-vocabulary 3D object association) and [**HOV-SG**](https://github.com/hovsg/HOV-SG) (hierarchical CLIP feature fusion).

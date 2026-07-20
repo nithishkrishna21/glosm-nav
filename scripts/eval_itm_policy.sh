@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copyright [2023] Boston Dynamics AI Institute, Inc.
 
-python -um vlfm.run \
+python -um glosm_nav.run \
   habitat_baselines.evaluate=True \
   habitat_baselines.eval_ckpt_path_dir=dummy_policy.pth \
   habitat_baselines.load_resume_state_config=False \
